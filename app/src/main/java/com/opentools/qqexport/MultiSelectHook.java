@@ -392,8 +392,13 @@ public final class MultiSelectHook {
             L.e("multifoward 里找不到取列表方法");
             return null;
         }
-        Object r = g.invoke(inst, ctx);
-        return r instanceof List ? (List<?>) r : null;
+        try {
+            Object r = g.invoke(inst, ctx);
+            return r instanceof List ? (List<?>) r : null;
+        } catch (Throwable t) {
+            L.e("调用 g(ctx) 失败: " + t);
+            return null;
+        }
     }
 
     private static Object vmContext() {
