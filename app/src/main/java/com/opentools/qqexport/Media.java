@@ -41,7 +41,7 @@ public final class Media {
     private static volatile List<Hit> INDEX = null;
     private static volatile long INDEX_AT = 0L;
     /** 各兜底策略的命中计数，导出结束后打日志用 */
-    private static int CNT_PATH, CNT_MD5, CNT_SIZE, CNT_NAME, CNT_CACHE;
+    private static int CNT_PATH, CNT_UUID, CNT_MD5, CNT_SIZE, CNT_NAME, CNT_CACHE;
     /** 索引最多收这么多文件，防止极端情况下卡死（本机实测约有 4.3 万个缓存文件） */
     private static final int INDEX_CAP = 120000;
     private static final int MAX_DEPTH = 2;
@@ -115,6 +115,19 @@ public final class Media {
      * @param name  原始文件名（同上，可为空）
      */
     public static File resolve(Context ctx, List<String> cands, String md5, long size, String name) {
+        return resolve(ctx, cands, md5, size, name, null);
+    }
+
+    /**
+     * 同上，额外支持按 fileUuid 命中。
+     *
+     * <p>视频走这条：QQ 把视频缓存命名成 {@code <uuid>_1.mp4} 或 {@code <uuid>.mp4}，
+     * 消息里带的正是 fileUuid，两者前缀一致。文件名前缀<b>有时</b>也是内容 md5，
+     * 但并不可靠（实测同一目录下两种命名混存），所以 uuid 只做前缀匹配，
+     * md5 仍然独立判断。</p>
+     */
+    public static File resolve(Context ctx, List<String> cands, String md5, long size, String name,
+                               String uuid) {
         if (cands != null) {
             for (String c : cands) {
                 File f = exist(c);
@@ -125,10 +138,25 @@ public final class Media {
             }
         }
         String m = (md5 == null || md5.length() != 32) ? null : md5.toLowerCase(java.util.Locale.US);
-        if (m == null && size <= 0 && (name == null || name.isEmpty())) return null;
+        String u = (uuid == null || uuid.length() < 16) ? null : uuid.toLowerCase(java.util.Locale.US);
+        if (m == null && u == null && size <= 0 && (name == null || name.isEmpty())) return null;
 
         List<Hit> idx = index(ctx);
         if (idx.isEmpty()) return null;
+
+        // 0) 按 fileUuid 前缀命中（视频最可靠的一把钥匙）
+        if (u != null) {
+            for (Hit h : idx) {
+                String fn = h.file.getName().toLowerCase(java.util.Locale.US);
+                // 同目录下有同名 .property 标签文件，前缀一样，绝不能当成视频本体
+                if (isSidecar(fn)) continue;
+                if (fn.startsWith(u + '_') || fn.startsWith(u + '.')) {
+                    CNT_UUID++;
+                    L.i("media: 按 uuid 命中 " + h.file);
+                    return h.file;
+                }
+            }
+        }
 
         // 1) 同大小 + md5 相同
         if (m != null && size > 0) {
@@ -167,6 +195,15 @@ public final class Media {
             }
         }
         return null;
+    }
+
+    /**
+     * QQ 会在媒体文件旁放同名的标签文件（.property / .tmp …），
+     * 它们和本体共享同一段前缀，参与匹配会把几百字节的标签当成视频，必须排除。
+     */
+    private static boolean isSidecar(String lowName) {
+        return lowName.endsWith(".property") || lowName.endsWith(".tmp")
+            || lowName.endsWith(".nomedia") || lowName.endsWith(".db");
     }
 
     private static File exist(String path) {
@@ -208,7 +245,7 @@ public final class Media {
 
     /** 导出结束后打印各策略命中情况，真机排查用 */
     public static String summary() {
-        return "path=" + CNT_PATH + " md5=" + CNT_MD5 + " size=" + CNT_SIZE
+        return "path=" + CNT_PATH + " uuid=" + CNT_UUID + " md5=" + CNT_MD5 + " size=" + CNT_SIZE
             + " name=" + CNT_NAME + " cache=" + CNT_CACHE;
     }
 
@@ -228,7 +265,9 @@ public final class Media {
                     walk(f, out, depth + 1);
                 } else {
                     long len = f.length();
-                    if (len > 0) out.add(new Hit(len, f));
+                    if (len <= 0) continue;
+                    if (isSidecar(f.getName().toLowerCase(java.util.Locale.US))) continue;
+                    out.add(new Hit(len, f));
                 }
             } catch (Throwable ignored) {
             }
@@ -239,7 +278,7 @@ public final class Media {
     public static void reset() {
         INDEX = null;
         INDEX_AT = 0L;
-        CNT_PATH = CNT_MD5 = CNT_SIZE = CNT_NAME = CNT_CACHE = 0;
+        CNT_PATH = CNT_UUID = CNT_MD5 = CNT_SIZE = CNT_NAME = CNT_CACHE = 0;
     }
 
     /* ---------------- md5 ---------------- */

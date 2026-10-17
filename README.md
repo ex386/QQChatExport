@@ -1,6 +1,6 @@
 # QQChatExport
 
-LSPosed 模块：把 QQ（`com.tencent.mobileqq`）本机聊天记录导出为 **Markdown + 媒体文件**（或退回单个 **TXT**），支持三种范围选择：
+LSPosed 模块：把 QQ（`com.tencent.mobileqq`）本机聊天记录导出为 **网页（HTML + 媒体，整体打包成 zip）**、**Markdown + 媒体文件**，或单个 **TXT**，支持三种范围选择：
 
 | 模式 | 依据 | 说明 |
 |---|---|---|
@@ -33,15 +33,21 @@ CI 在 `.github/workflows/build.yml`：push 到 `main` 出 artifact，打 `v*` t
 
 ## 导出产物
 
-默认 Markdown：每个会话一个独立目录
+默认网页版：每个会话一个独立目录，并整体打包成同名 zip
 
 ```
 Android/data/com.tencent.mobileqq/files/QQExport/<会话>_<时间>/
-├── chat.md      正文（表格头 + 逐条消息）
-└── images/      图片、表情、语音、视频、文件
+├── index.html   正文全部内联（气泡布局，我/对方左右区分）
+├── media/       图片、表情、语音、视频、文件
+└── <会话>_<时间>.zip   上面整个目录的打包（分享/发给别人就传这个）
 ```
 
-关闭「导出为 Markdown」时退回单个 TXT：`QQ_<frienduin>_<isTroop>_<时间戳>.txt`（不含媒体）。
+`index.html` 里媒体用相对路径 `media/xxx` 引用，解压即可离线打开；图片点开原图、语音 `<audio>` 直接播、视频 `<video>` 可播放（带封面）。找不到的媒体留 `[图片]`/`[视频文件未找到，仅封面]` 之类占位。
+
+另外两种格式：
+
+- **Markdown**：`chat.md` + `images/`
+- **纯文本**：单文件 `QQ_<frienduin>_<isTroop>_<时间戳>.txt`（不含媒体）
 
 均为 App 外部私有目录，无需存储权限；但 **Android 11+ 系统自带文件管理器看不到 `Android/data`**，需用支持该目录的第三方文件管理器。
 
@@ -51,7 +57,7 @@ Android/data/com.tencent.mobileqq/files/QQExport/<会话>_<时间>/
 |---|---|---|---|
 | 入口 | 聊天页悬浮按钮 | 开 | 聊天界面右下角「导出」圆钮 |
 | 入口 | 长按多选栏按钮 | 开 | 多选栏右侧「导出」，已勾选时只导出勾选项 |
-| 导出格式 | 导出为 Markdown | 开 | 输出 `chat.md` + `images/`；关闭退回 TXT |
+| 导出格式 | 导出格式 | 网页 | 三选一：网页（index.html + media/ 打成 zip）/ Markdown / 纯文本 |
 | 导出格式 | 复制媒体文件 | 开 | 关闭后媒体只留文字占位 |
 | 导出格式 | 媒体体积上限 | 50 MB | 单文件超限不复制，0 表示不限制 |
 | 显示 | 附带发送者 UIN | 开 | 形如 `昵称(10001): 内容` |
@@ -71,7 +77,9 @@ ExportDialog     单会话范围选择 UI（时间/seq/手动）
 PickedExport     多选结果直出，跨会话分组
 MultiSelectHook  多选栏右侧注入「导出」，旁听 MultiSelectEvent 同步勾选
 FloatingEntry    聊天页悬浮入口
+Html             导出网页（v1.6 默认）：文字内联 index.html + media/，整体打包 zip
 Md               导出 Markdown：正文渲染 + 媒体复制（判型/去重/体积上限/缺失计数）
+Fmt              导出格式 HTML/MD/TXT 的统一读写（设置页与各入口共用）
 Prefs            跨进程设置读写（XSharedPreferences + 节流 reload）
 SettingsActivity 模块设置页（卡片式 UI，无 AndroidX）
 Ui               原生控件拼装的轻量 UI 工具（卡片/分组/开关行/按钮/圆角）
@@ -92,6 +100,7 @@ Ui               原生控件拼装的轻量 UI 工具（卡片/分组/开关行
 
 - 仅读取本机当前登录账号已落库（或已加载）的消息，不读数据库、不联网、不上传；
 - 媒体文件来自 QQ 本地缓存，缓存被清理时只输出 `*[图片]*` / `*[视频]*` 之类占位并计入「缺失」统计；
+- 媒体匹配顺序：元素里的本地路径 → `fileUuid` 文件名前缀（视频主力，`cache/superplayer` 里就是 `<uuid>_<ts>_1.mp4`）→ 同体积且 md5 相同 → 同体积唯一 → 同名文件；同名 `.property` 标签文件一律跳过；
 - 长文本消息（`msg` 被截断为索引）暂未展开 `longMsgIndex`；
 - 未登录/未加载的云端历史需先滚动或走 `HISTORY_CANDIDATES` 路径拉取；
 - 单个会话缓存有上限（默认 20000 条），超出部分靠滚动补采。

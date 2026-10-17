@@ -46,6 +46,8 @@ public class Msg {
         /** 原始文件名或表情名 */
         public String name;
         public String md5;
+        /** 视频的 fileUuid：QQ 用它给 cache/superplayer 里的文件命名（<uuid>_<ts>_1.mp4） */
+        public String uuid;
         public long size;
         public int w, h;
         /** 其它可能的本地路径（QQ 把多档缩略图塞在 HashMap 里，这里全收） */
@@ -281,7 +283,11 @@ public class Msg {
                 p.size = Reflect.L(v, "fileSize");
                 p.w = (int) Reflect.L(v, "thumbWidth");
                 p.h = (int) Reflect.L(v, "thumbHeight");
-                collect(p, v, "filePath");
+                // 视频本体在 cache/superplayer 里以 fileUuid 命名，md5 用于内容校验
+                p.uuid = firstStr(v, "fileUuid", "fileUuidStr");
+                p.md5 = firstStr(v, "fileMd5", "md5HexStr", "md5");
+                p.name = firstStr(v, "fileName");
+                collect(p, v, "filePath", "fileDownloadPath", "localPath");
                 collectMap(p, Reflect.get(v, "thumbPath"));
                 return p;
             }

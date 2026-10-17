@@ -300,11 +300,12 @@ public final class Md {
         if (!sc.on) return null;
         File src;
         java.util.List<String> cands = cands(p, withPath);
-        src = Media.resolve(sc.ctx, cands, p.md5, p.size, p.name);
+        src = Media.resolve(sc.ctx, cands, p.md5, p.size, p.name, p.uuid);
         if (src == null) {
             sc.missing++;
             L.d("media: MISS kind=" + kind + " path=" + p.path + " thumb=" + p.thumb
-                + " alts=" + p.alts + " md5=" + p.md5 + " size=" + p.size + " name=" + p.name);
+                + " alts=" + p.alts + " md5=" + p.md5 + " uuid=" + p.uuid
+                + " size=" + p.size + " name=" + p.name);
             return null;
         }
         if (sc.maxBytes > 0 && src.length() > sc.maxBytes) {
