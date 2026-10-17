@@ -17,37 +17,60 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.WeakHashMap;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
 /**
- * 多选栏改造。
+ * 多选栏改造（QQ 9.2.35 实测路径）。
  *
- * 两个独立部分：
- *  A. UI：在 MultiSelectBarVB 的根 LinearLayout（无参方法 J1() 的返回值）右侧插入“导出”按钮。
- *     注意 bindViewAndData() 会遍历该 LinearLayout 的所有子 View 调 setAlpha/setVisibility，
- *     所以每次绑定完数据都要把我们的按钮重新置为可见，否则会被一起藏掉。
+ * 两件事：
+ *   A. 在 MultiSelectBarVB 的操作栏里插一个“导出”按钮；
+ *   B. 点按钮时**现取**QQ 当前勾选的消息列表，不再旁听事件。
  *
- *  B. 数据：旁听 MultiSelectEvent 的子类构造器，把“当前勾选了哪些消息”镜像到 Selection。
- *     只读不写，不改变 QQ 自身行为。
+ * 为什么不再旁听事件：旧实现 hook 了 MultiSelectEvent$* 共 5 个类的构造器（24 个），
+ * 靠“按字段类型猜”把勾选状态镜像下来，既脆弱（字段名/类型一变就错），
+ * 又容易把长按菜单带崩。改成现取后，这条链路完全依赖 QQ 自己的读接口：
  *
- * 事件里字段名是混淆的（d/e/F...），所以一律按“字段类型”认：
- *     SetSelectMsgList  → 字段类型 List<...>
- *     AddSelectMsg      → 字段类型 AIOMsgItem
- *     RemoveSelectMsg   → 字段类型 AIOMsgItem
- *     RemoveAllSelectMsg→ 无字段
- *     SetSelectMode     → 字段类型 boolean
+ *   multifoward.b.a                       （静态单例）
+ *   multifoward.b.g(com.tencent.aio.api.runtime.a) -> List<AIOMsgItem>
+ *   FrameworkVM.getMContext() -> com.tencent.mvi.api.runtime.b（实际是 aio runtime ctx）
+ *
+ * 其中 g 的真实签名（classes5.dex 实测）：
+ *   M inst  g  (Lcom/tencent/aio/api/runtime/a;)Ljava/util/List;
+ * 运行时 ctx 由 MultiSelectBarVM（FrameworkVM 子类）的 getMContext() 拿到，
+ * 同时我们也 hook 住 g() 自身，把最近一次的入参/返回值留作兜底——
+ * 这样即使 VM 那条路走不通，也能用上一次 QQ 自己算出来的勾选列表。
+ *
+ * 布局来源：MultiSelectBarVB$mOperationLayout$2.invoke() 返回
+ *   LinearLayout（classes5.dex 实测），这是真正造操作栏的地方，直接插进去最稳。
  */
 public final class MultiSelectHook {
 
     private static final String CLS_BAR = "com.tencent.mobileqq.aio.input.multiselect.MultiSelectBarVB";
-    private static final String CLS_ITEM = "com.tencent.mobileqq.aio.msg.AIOMsgItem";
-    private static final String EV = "com.tencent.mobileqq.aio.event.MultiSelectEvent$";
+    private static final String CLS_BAR_LAMBDA = CLS_BAR + "$mOperationLayout$2";
+    private static final String CLS_FWD = "com.tencent.mobileqq.aio.msglist.holder.component.multifoward.b";
 
     private static final String TAG = "qq-export-multiselect-btn";
+
+    /** VB 实例 -> 操作栏根布局（弱引用，页面销毁自动回收） */
+    private static final Map<Object, ViewGroup> ROOTS =
+            Collections.synchronizedMap(new WeakHashMap<Object, ViewGroup>());
+
+    /** 最近一个 MultiSelectBarVB 及其 VM */
+    private static volatile Object sBar;
+    private static volatile Object sBarVM;
+    /** multifoward.b 单例 */
+    private static volatile Object sFwd;
+    /** 最近一次 g(ctx) 的入参（aio runtime context）与返回（勾选列表） */
+    private static volatile Object sLastCtx;
+    private static volatile List<?> sLastPicked;
 
     private MultiSelectHook() {
     }
@@ -59,7 +82,7 @@ public final class MultiSelectHook {
             L.e(t);
         }
         try {
-            hookEvents(cl);
+            hookForward(cl);
         } catch (Throwable t) {
             L.e(t);
         }
@@ -76,14 +99,16 @@ public final class MultiSelectHook {
             return;
         }
 
-        // A.1 无参构造器：建好就挂
         int n = 0;
+
+        // A.1 无参构造器：VB 一建好就记下实例
         for (Constructor<?> c : bar.getDeclaredConstructors()) {
             if (c.getParameterCount() != 0) continue;
             try {
                 XposedBridge.hookMethod(c, new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam p) {
+                        sBar = p.thisObject;
                         attach(p.thisObject);
                     }
                 });
@@ -92,7 +117,51 @@ public final class MultiSelectHook {
             }
         }
 
-        // A.2 bindViewAndData / onCreateView 之后都要重新确认可见
+        // A.2 操作栏真正的产出点：MultiSelectBarVB$mOperationLayout$2.invoke()
+        try {
+            Class<?> lam = XposedHelpers.findClass(CLS_BAR_LAMBDA, cl);
+            for (Method m : lam.getDeclaredMethods()) {
+                if (!"invoke".equals(m.getName()) || m.getParameterCount() != 0) continue;
+                if (!ViewGroup.class.isAssignableFrom(m.getReturnType())) continue;
+                try {
+                    XposedBridge.hookMethod(m, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam p) {
+                            if (!(p.getResult() instanceof ViewGroup)) return;
+                            ViewGroup root = (ViewGroup) p.getResult();
+                            Object vb = outerOf(p.thisObject);
+                            if (vb != null) {
+                                ROOTS.put(vb, root);
+                                sBar = vb;
+                            }
+                            attach(vb, root);
+                        }
+                    });
+                    n++;
+                    L.i("已挂 mOperationLayout lambda");
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable t) {
+            L.e("mOperationLayout lambda 不可用: " + t);
+        }
+
+        // A.3 缓存 VM，供点击时取 aio runtime context
+        for (Method m : allMethods(bar)) {
+            if (!"createVM".equals(m.getName()) || m.getParameterCount() != 0) continue;
+            try {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam p) {
+                        if (p.getResult() != null) sBarVM = p.getResult();
+                    }
+                });
+                n++;
+            } catch (Throwable ignored) {
+            }
+        }
+
+        // A.4 bindViewAndData 会遍历子 View 调 setAlpha/setVisibility，绑完要重新亮出来
         for (Method m : allMethods(bar)) {
             String name = m.getName();
             if (!"bindViewAndData".equals(name) && !"onCreateView".equals(name)) continue;
@@ -112,8 +181,11 @@ public final class MultiSelectHook {
     }
 
     private static void attach(Object vb) {
+        attach(vb, rootOf(vb));
+    }
+
+    private static void attach(Object vb, ViewGroup root) {
         try {
-            ViewGroup root = rootOf(vb);
             if (root == null) return;
 
             View old = root.findViewWithTag(TAG);
@@ -170,14 +242,28 @@ public final class MultiSelectHook {
         }
     }
 
-    /** 取多选栏根 LinearLayout：优先已知方法名 J1()，退化按“无参且返回 ViewGroup”挑子 View 最多的 */
+    /**
+     * 取多选栏操作栏根布局：
+     *  1) lambda 已经产出过就直接用缓存；
+     *  2) 退化到 K1()/C1()/J1()（J1 是 static，invoke 时 target 会被忽略）；
+     *  3) 最后按“无参且返回 ViewGroup、子 View 最多”扫描。
+     */
     private static ViewGroup rootOf(Object vb) {
         if (vb == null) return null;
 
+        ViewGroup cached = ROOTS.get(vb);
+        if (cached != null) return cached;
+
         for (Method m : allMethods(vb.getClass())) {
-            if (!"J1".equals(m.getName()) || m.getParameterCount() != 0) continue;
+            if (m.getParameterCount() != 0) continue;
+            if (!ViewGroup.class.isAssignableFrom(m.getReturnType())) continue;
+            String name = m.getName();
+            if (!"K1".equals(name) && !"C1".equals(name) && !"J1".equals(name)) continue;
             Object r = call(vb, m);
-            if (r instanceof ViewGroup) return (ViewGroup) r;
+            if (r instanceof ViewGroup && ((ViewGroup) r).getChildCount() > 0) {
+                ROOTS.put(vb, (ViewGroup) r);
+                return (ViewGroup) r;
+            }
         }
 
         ViewGroup best = null;
@@ -190,6 +276,7 @@ public final class MultiSelectHook {
             if (g.getChildCount() < 2) continue;
             if (best == null || g.getChildCount() > best.getChildCount()) best = g;
         }
+        if (best != null) ROOTS.put(vb, best);
         return best;
     }
 
@@ -200,90 +287,147 @@ public final class MultiSelectHook {
             return;
         }
         Prefs.reload();
-        List<Msg> picked = Selection.list();
-        L.i("点击导出，已勾选 " + picked.size());
+        List<Msg> picked = fetchPicked();
+        L.i("点击导出，现取勾选 " + picked.size() + " 条");
         if (!picked.isEmpty()) {
+            Store.ingest(picked);
             PickedExport.show(act, picked);
         } else {
+            Toast.makeText(act, "没读到勾选列表，改为按时间范围导出", Toast.LENGTH_SHORT).show();
             ExportDialog.show(act);
         }
     }
 
-    /* ==================== B. 勾选状态 ==================== */
+    /* ==================== B. 现取勾选列表 ==================== */
 
-    private static void hookEvents(ClassLoader cl) {
-        hookEvent(cl, EV + "SetSelectMsgList", Kind.LIST);
-        hookEvent(cl, EV + "AddSelectMsg", Kind.ADD);
-        hookEvent(cl, EV + "RemoveSelectMsg", Kind.REMOVE);
-        hookEvent(cl, EV + "RemoveAllSelectMsg", Kind.CLEAR);
-        hookEvent(cl, EV + "SetSelectMode", Kind.MODE);
-    }
-
-    private enum Kind {LIST, ADD, REMOVE, CLEAR, MODE}
-
-    private static void hookEvent(ClassLoader cl, String fqn, final Kind kind) {
-        Class<?> c;
+    private static void hookForward(ClassLoader cl) {
+        Class<?> fwd;
         try {
-            c = Class.forName(fqn, false, cl);
+            fwd = XposedHelpers.findClass(CLS_FWD, cl);
         } catch (Throwable t) {
-            L.e("事件类缺失: " + fqn);
+            L.e("multifoward.b 不存在: " + t);
             return;
         }
-        int n = 0;
-        for (Constructor<?> ct : c.getDeclaredConstructors()) {
+
+        // 静态单例字段 a
+        for (Field fd : fwd.getDeclaredFields()) {
+            if (!Modifier.isStatic(fd.getModifiers())) continue;
+            if (fd.getType() != fwd) continue;
             try {
-                XposedBridge.hookMethod(ct, new XC_MethodHook() {
+                fd.setAccessible(true);
+                Object v = fd.get(null);
+                if (v != null) sFwd = v;
+            } catch (Throwable ignored) {
+            }
+        }
+
+        int n = 0;
+        for (Method m : fwd.getDeclaredMethods()) {
+            if (m.getParameterCount() != 1) continue;
+            if (!List.class.isAssignableFrom(m.getReturnType())) continue;
+            if (!m.getParameterTypes()[0].getName().startsWith("com.tencent.aio.api.runtime")) continue;
+            try {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam p) {
                         try {
-                            onEvent(kind, p.thisObject);
-                        } catch (Throwable t) {
-                            L.e(t);
+                            if (p.args.length > 0 && p.args[0] != null) sLastCtx = p.args[0];
+                            Object r = p.getResult();
+                            if (r instanceof List) sLastPicked = (List<?>) r;
+                        } catch (Throwable ignored) {
                         }
                     }
                 });
                 n++;
+                L.i("已挂 " + m.getName() + " 取勾选列表");
             } catch (Throwable ignored) {
             }
         }
-        L.i("事件已挂: " + fqn + " ctors=" + n);
+        XposedBridge.log("[QQExport] multifoward hooked: " + n);
     }
 
-    private static void onEvent(Kind kind, Object ev) {
-        switch (kind) {
-            case LIST: {
-                Object v = firstOfType(ev, List.class);
-                if (v instanceof List) {
-                    List<?> l = (List<?>) v;
-                    Selection.reset(l);
-                    Store.ingest(l);
-                }
-                break;
-            }
-            case ADD: {
-                Object v = firstOfTypeName(ev, CLS_ITEM);
-                if (v != null) {
-                    Selection.add(v);
-                    Store.ingestSingle(v);
-                }
-                break;
-            }
-            case REMOVE: {
-                Object v = firstOfTypeName(ev, CLS_ITEM);
-                if (v != null) Selection.remove(v);
-                break;
-            }
-            case CLEAR:
-                Selection.clear();
-                break;
-            case MODE: {
-                Object v = firstPrimitiveBoolean(ev);
-                if (v instanceof Boolean && !((Boolean) v)) Selection.clear();
-                break;
-            }
-            default:
-                break;
+    /** 现取 + 兜底 + 转换去重 */
+    private static List<Msg> fetchPicked() {
+        List<?> raw = null;
+        String from = "none";
+
+        try {
+            raw = queryPicked();
+            if (raw != null) from = "live";
+        } catch (Throwable t) {
+            L.e("现取失败: " + t);
         }
+
+        if (raw == null || raw.isEmpty()) {
+            raw = sLastPicked;
+            from = "cached";
+        }
+
+        LinkedHashMap<Long, Msg> map = new LinkedHashMap<>();
+        if (raw != null) {
+            for (Object o : raw) {
+                Msg m = Msg.from(o);
+                if (m == null || m.uniseq == 0L) continue;
+                map.put(m.uniseq, m);
+            }
+        }
+        L.i("勾选来源=" + from + " raw=" + (raw == null ? -1 : raw.size()) + " -> " + map.size());
+        return new ArrayList<>(map.values());
+    }
+
+    /** multifoward.b.a.g(ctx) —— QQ 自己算出来的当前勾选列表 */
+    private static List<?> queryPicked() {
+        Object inst = sFwd;
+        if (inst == null) return null;
+
+        Object ctx = sLastCtx;
+        if (!isAioCtx(ctx)) ctx = vmContext();
+        if (!isAioCtx(ctx)) {
+            L.i("拿不到 aio runtime context，跳过现取");
+            return null;
+        }
+
+        Method g = msgListMethod(inst.getClass());
+        if (g == null) {
+            L.e("multifoward 里找不到取列表方法");
+            return null;
+        }
+        Object r = g.invoke(inst, ctx);
+        return r instanceof List ? (List<?>) r : null;
+    }
+
+    private static Object vmContext() {
+        Object vm = sBarVM;
+        if (vm == null) return null;
+        Object fallback = null;
+        for (Method m : allMethods(vm.getClass())) {
+            if (m.getParameterCount() != 0) continue;
+            String name = m.getName();
+            if (!"getMContext".equals(name) && !"getSafetyContext".equals(name)) continue;
+            Object r = call(vm, m);
+            if (r == null) continue;
+            if (isAioCtx(r)) return r;
+            if (fallback == null) fallback = r;
+        }
+        return fallback;
+    }
+
+    private static Method msgListMethod(Class<?> c) {
+        for (Method m : allMethods(c)) {
+            if (m.getParameterCount() != 1) continue;
+            if (!List.class.isAssignableFrom(m.getReturnType())) continue;
+            if (!m.getParameterTypes()[0].getName().startsWith("com.tencent.aio.api.runtime")) continue;
+            return m;
+        }
+        return null;
+    }
+
+    private static boolean isAioCtx(Object o) {
+        if (o == null) return false;
+        for (Class<?> k = o.getClass(); k != null; k = k.getSuperclass()) {
+            if (k.getName().startsWith("com.tencent.aio.api.runtime")) return true;
+        }
+        return false;
     }
 
     /* ==================== 反射小工具 ==================== */
@@ -292,14 +436,6 @@ public final class MultiSelectHook {
         List<Method> out = new ArrayList<>();
         for (Class<?> k = c; k != null && k != Object.class; k = k.getSuperclass()) {
             for (Method m : k.getDeclaredMethods()) out.add(m);
-        }
-        return out;
-    }
-
-    private static List<Field> allFields(Class<?> c) {
-        List<Field> out = new ArrayList<>();
-        for (Class<?> k = c; k != null && k != Object.class; k = k.getSuperclass()) {
-            for (Field f : k.getDeclaredFields()) out.add(f);
         }
         return out;
     }
@@ -313,44 +449,18 @@ public final class MultiSelectHook {
         }
     }
 
-    private static Object get(Field f, Object o) {
-        try {
-            f.setAccessible(true);
-            return f.get(o);
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
-    private static Object firstOfType(Object o, Class<?> type) {
-        for (Field f : allFields(o.getClass())) {
-            if (Modifier.isStatic(f.getModifiers())) continue;
-            if (f.getName().startsWith("$")) continue;
-            if (!type.isAssignableFrom(f.getType())) continue;
-            Object v = get(f, o);
-            if (v != null) return v;
-        }
-        return null;
-    }
-
-    private static Object firstOfTypeName(Object o, String typeName) {
-        for (Field f : allFields(o.getClass())) {
-            if (Modifier.isStatic(f.getModifiers())) continue;
-            if (f.getName().startsWith("$")) continue;
-            if (!typeName.equals(f.getType().getName())) continue;
-            Object v = get(f, o);
-            if (v != null) return v;
-        }
-        return null;
-    }
-
-    private static Object firstPrimitiveBoolean(Object o) {
-        for (Field f : allFields(o.getClass())) {
-            if (Modifier.isStatic(f.getModifiers())) continue;
-            if (f.getName().startsWith("$")) continue;
-            if (f.getType() != boolean.class) continue;
-            Object v = get(f, o);
-            if (v != null) return v;
+    /** lambda 里的 this$0，即外部 MultiSelectBarVB */
+    private static Object outerOf(Object lambda) {
+        if (lambda == null) return null;
+        for (Class<?> k = lambda.getClass(); k != null && k != Object.class; k = k.getSuperclass()) {
+            for (Field f : k.getDeclaredFields()) {
+                if (!"this$0".equals(f.getName())) continue;
+                try {
+                    f.setAccessible(true);
+                    return f.get(lambda);
+                } catch (Throwable ignored) {
+                }
+            }
         }
         return null;
     }

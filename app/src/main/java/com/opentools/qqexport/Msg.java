@@ -116,22 +116,81 @@ public class Msg {
         return sb.toString();
     }
 
+    /**
+     * MsgElement 里同时存在 elementId/elementType/extBufForUI 这类非内容字段，
+     * 而且它们排在 textElement 之前。旧实现“取第一个非空引用字段”会把
+     * extBufForUI 当成正文（describe 返回空串），直接导致正文丢失。
+     *
+     * 所以这里改成显式按内容字段名依次尝试：命中就出文案，没命中继续下一个。
+     * 字段表见 classes.dex 里 Lcom/tencent/qqnt/kernel/nativeinterface/MsgElement;。
+     */
+    private static final String[] ELEMENT_ORDER = {
+            "textElement",
+            "picElement",
+            "pttElement",
+            "videoElement",
+            "fileElement",
+            "faceElement",
+            "marketFaceElement",
+            "arkElement",
+            "structMsgElement",
+            "structLongMsgElement",
+            "grayTipElement",
+            "replyElement",
+            "multiForwardMsgElement",
+            "walletElement",
+            "markdownElement",
+            "giphyElement",
+            "calendarElement",
+            "shareLocationElement",
+            "liveGiftElement",
+            "tofuRecordElement",
+            "avRecordElement",
+            "faceBubbleElement",
+            "textGiftElement",
+            "yoloGameResultElement",
+            "taskTopMsgElement",
+            "filterMsgElement",
+            "prologueMsgElement",
+    };
+
     private static String renderElement(Object el) {
-        for (Field f : el.getClass().getDeclaredFields()) {
+        Class<?> c = el.getClass();
+        for (String name : ELEMENT_ORDER) {
+            Object v = field(c, el, name);
+            if (v == null) continue;
+            String s = describe(name, v);
+            if (s != null && !s.isEmpty()) return s;
+        }
+        // 兜底：按类型扫一遍，跳过 extBufForUI 之类的原始数据字段
+        for (Field f : c.getDeclaredFields()) {
             String n = f.getName();
             if (n.startsWith("$") || Modifier.isStatic(f.getModifiers())) continue;
             if (f.getType().isPrimitive()) continue;
-            Object v;
-            try {
-                f.setAccessible(true);
-                v = f.get(el);
-            } catch (Throwable t) {
-                continue;
-            }
+            if (!n.endsWith("Element")) continue;
+            if (f.getType() == byte[].class) continue;
+            Object v = field(c, el, n);
             if (v == null) continue;
-            return describe(n, v);
+            String s = describe(n, v);
+            if (s != null && !s.isEmpty()) return s;
         }
         return "";
+    }
+
+    /** 逐层往上找同名字段，取到返回值 */
+    private static Object field(Class<?> c, Object target, String name) {
+        for (Class<?> k = c; k != null && k != Object.class; k = k.getSuperclass()) {
+            try {
+                Field f = k.getDeclaredField(name);
+                f.setAccessible(true);
+                return f.get(target);
+            } catch (NoSuchFieldException e) {
+                continue;
+            } catch (Throwable t) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private static String describe(String field, Object v) {
