@@ -317,7 +317,7 @@ public final class Md {
             // 否则会拿视频本体去当封面，HTML 里就是一张坏图
             src = Media.resolve(sc.ctx, cands, null, 0L, null);
         } else {
-            src = Media.resolve(sc.ctx, cands, p.md5, p.size, p.name, p.uuid);
+            src = Media.resolve(sc.ctx, cands, p.md5, p.size, p.name, p.uuid, p.url);
         }
         if (src == null && withPath == null && Net.usable(p.url)) {
             // v2.0 联网兜底：本地缓存里确实没有这个文件时，改从服务器拉原图。
