@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">QQ聊天导出</string>
+    <string name="xposed_desc">导出QQ聊天记录为txt/剪切板，支持时间·seq·手动勾选范围（仅导出本机自有数据）</string>
+</resources>
