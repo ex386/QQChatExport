@@ -162,7 +162,7 @@ public final class ExportDialog {
 
         final CheckBox withUin = new CheckBox(act);
         withUin.setText("附带发送者UIN");
-        withUin.setChecked(true);
+        withUin.setChecked(Prefs.bool(Prefs.K_UIN, Prefs.D_UIN));
         root.addView(withUin);
 
         final AlertDialog dlg = new AlertDialog.Builder(act)
@@ -180,6 +180,7 @@ public final class ExportDialog {
                     Toast.makeText(act, "该范围没有消息", Toast.LENGTH_SHORT).show();
                     return;
                 }
+                rememberUin(act, withUin.isChecked());
                 String text = Export.build(key, picked, withUin.isChecked());
                 try {
                     String path = Export.toFile(act, key, text);
@@ -196,6 +197,7 @@ public final class ExportDialog {
                     Toast.makeText(act, "该范围没有消息", Toast.LENGTH_SHORT).show();
                     return;
                 }
+                rememberUin(act, withUin.isChecked());
                 Export.toClipboard(act, Export.build(key, picked, withUin.isChecked()));
                 Toast.makeText(act, "已复制 " + picked.size() + " 条", Toast.LENGTH_SHORT).show();
                 dlg.dismiss();
@@ -203,6 +205,14 @@ public final class ExportDialog {
         });
 
         dlg.show();
+    }
+
+    /** 记住这次的选择，下次打开面板沿用（并同步给设置页） */
+    private static void rememberUin(Activity act, boolean withUin) {
+        try {
+            Prefs.local(act).edit().putBoolean(Prefs.K_UIN, withUin).apply();
+        } catch (Throwable ignored) {
+        }
     }
 
     private static List<Msg> resolve(int modeId, List<Msg> all, boolean[] sel,
