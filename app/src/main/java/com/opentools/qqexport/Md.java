@@ -300,7 +300,13 @@ public final class Md {
         if (!sc.on) return null;
         File src;
         java.util.List<String> cands = cands(p, withPath);
-        src = Media.resolve(sc.ctx, cands, p.md5, p.size, p.name, p.uuid);
+        if (withPath != null) {
+            // 封面/指定路径这种调用只认显式路径：不能退回 uuid/size 兜底，
+            // 否则会拿视频本体去当封面，HTML 里就是一张坏图
+            src = Media.resolve(sc.ctx, cands, null, 0L, null);
+        } else {
+            src = Media.resolve(sc.ctx, cands, p.md5, p.size, p.name, p.uuid);
+        }
         if (src == null) {
             sc.missing++;
             L.d("media: MISS kind=" + kind + " path=" + p.path + " thumb=" + p.thumb
