@@ -1,9 +1,14 @@
 package com.opentools.qqexport;
 
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.app.Dialog;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
+import android.view.Gravity;
+import android.view.View;
 import android.view.ViewGroup;
-import android.widget.CheckBox;
+import android.view.Window;
+import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -18,10 +23,12 @@ import java.util.Map;
  * 多选栏「导出」的落地面板。
  *
  * 与 {@link ExportDialog} 的区别：这里不做范围筛选——用户已经在 QQ 的多选模式里
- * 一条条勾好了，直接按勾选结果导出即可。所以面板只有「附带发送者UIN」一个选项。
+ * 一条条勾好了，直接按勾选结果导出即可。所以面板只有「附带发送者 UIN」一个选项。
  *
  * 勾选项可能跨会话（QQ 多选栏本身不支持跨会话，但万一），这里按 sessionKey
  * 分组：单会话时输出与 ExportDialog 完全一致；多会话时先写总头，再逐会话分段。
+ *
+ * 外观同为 MIUIX：裸 Dialog + 全自绘，不用 AlertDialog / CheckBox。
  */
 public final class PickedExport {
 
@@ -52,82 +59,140 @@ public final class PickedExport {
         }
 
         final int total = total(groups);
-        int pad = dp(act, 12);
-        LinearLayout root = new LinearLayout(act);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(pad, pad, pad, pad);
-
-        TextView summary = new TextView(act);
-        StringBuilder sb = new StringBuilder("已勾选 " + total + " 条");
-        if (groups.size() > 1) sb.append("，来自 ").append(groups.size()).append(" 个会话");
-        summary.setText(sb.toString());
-        summary.setTextSize(13);
-        root.addView(summary);
-
-        TextView hint = new TextView(act);
-        hint.setText("按勾选顺序导出，不套用时间/seq 范围");
-        hint.setTextSize(11);
-        hint.setPadding(0, dp(act, 6), 0, dp(act, 6));
-        root.addView(hint);
-
-        final CheckBox withUin = new CheckBox(act);
-        withUin.setText("附带发送者UIN");
-        withUin.setChecked(Prefs.bool(Prefs.K_UIN, Prefs.D_UIN));
-        root.addView(withUin);
-
+        final boolean multi = groups.size() > 1;
         final boolean md = Prefs.bool(Prefs.K_MD, Prefs.D_MD);
-        final AlertDialog dlg = new AlertDialog.Builder(act)
-                .setTitle("导出勾选的聊天记录")
-                .setView(root)
-                .setNegativeButton("取消", null)
-                .setPositiveButton(md ? "导出Markdown" : "导出TXT", null)
-                .setNeutralButton("复制到剪切板", null)
-                .create();
+        final boolean[] uin = {Prefs.bool(Prefs.K_UIN, Prefs.D_UIN)};
+        final Dialog[] ref = new Dialog[1];
 
-        dlg.setOnShowListener(d -> {
-            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                boolean u = withUin.isChecked();
-                remember(act, u);
-                if (md) {
-                    try {
-                        int n = 0;
-                        String lastDir = null;
-                        for (Map.Entry<String, List<Msg>> e : groups.entrySet()) {
-                            Md.Result r = Md.export(act, e.getKey(), e.getValue(), u);
-                            n += r.msgs;
-                            lastDir = r.dir;
-                        }
-                        String msg = groups.size() == 1
-                                ? "已导出 " + n + " 条 → " + lastDir
-                                : "已导出 " + n + " 条，分属 " + groups.size() + " 个会话，各自一个目录";
-                        Toast.makeText(act, msg, Toast.LENGTH_LONG).show();
-                        dlg.dismiss();
-                    } catch (Throwable t) {
-                        Toast.makeText(act, "导出失败: " + t, Toast.LENGTH_LONG).show();
-                    }
-                    return;
-                }
-                String text = buildAll(groups, u);
-                String key = fileNameKey(groups);
+        final LinearLayout sheet = Ui.sheet(act);
+
+        /* ---------- 标题 ---------- */
+        LinearLayout head = new LinearLayout(act);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout hcol = Ui.column(act);
+        hcol.addView(Ui.text(act, "导出勾选消息", 20, Ui.colorText(act), true));
+        TextView hs = Ui.text(act, "按勾选顺序导出，不套用范围筛选",
+                11, Ui.colorSub(act), false);
+        hs.setPadding(0, Ui.dp(act, 4), 0, 0);
+        hcol.addView(hs);
+        head.addView(hcol, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView close = Ui.closeButton(act);
+        int cs = Ui.dp(act, 28);
+        head.addView(close, new LinearLayout.LayoutParams(cs, cs));
+        close.setOnClickListener(v -> {
+            if (ref[0] != null) ref[0].dismiss();
+        });
+        sheet.addView(head);
+
+        /* ---------- 摘要 ---------- */
+        LinearLayout info = Ui.panel(act);
+        info.addView(Ui.textRow(act, "已勾选",
+                multi ? "分属 " + groups.size() + " 个会话，各自一个目录" : null,
+                Ui.valuePill(act, total + " 条")));
+        LinearLayout.LayoutParams iLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        iLp.topMargin = Ui.dp(act, 16);
+        sheet.addView(info, iLp);
+
+        /* ---------- 附带 UIN ---------- */
+        LinearLayout uinBox = Ui.panel(act);
+        uinBox.addView(Ui.switchRow(act, "附带发送者 UIN",
+                "输出形如 昵称(10001): 内容；关闭则只输出昵称",
+                uin[0],
+                on -> {
+                    uin[0] = on;
+                    remember(act, on);
+                }));
+        LinearLayout.LayoutParams uLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        uLp.topMargin = Ui.dp(act, 12);
+        sheet.addView(uinBox, uLp);
+
+        /* ---------- 按钮 ---------- */
+        TextView cancel = Ui.button(act, "取消", false, v -> {
+            if (ref[0] != null) ref[0].dismiss();
+        });
+        TextView copy = Ui.button(act, "复制", false, v -> {
+            Export.toClipboard(act, buildAll(groups, uin[0]));
+            Toast.makeText(act, "已复制 " + total + " 条", Toast.LENGTH_SHORT).show();
+            if (ref[0] != null) ref[0].dismiss();
+        });
+        TextView ok = Ui.button(act, md ? "导出 Markdown" : "导出 TXT", true, v -> {
+            boolean u = uin[0];
+            remember(act, u);
+            if (md) {
                 try {
-                    String path = Export.toFile(act, key, text);
-                    Toast.makeText(act, "已导出 " + total + " 条 → " + path, Toast.LENGTH_LONG).show();
-                    dlg.dismiss();
+                    int n = 0;
+                    String lastDir = null;
+                    for (Map.Entry<String, List<Msg>> e : groups.entrySet()) {
+                        Md.Result r = Md.export(act, e.getKey(), e.getValue(), u);
+                        n += r.msgs;
+                        lastDir = r.dir;
+                    }
+                    String msg = multi
+                            ? "已导出 " + n + " 条，分属 " + groups.size() + " 个会话，各自一个目录"
+                            : "已导出 " + n + " 条 → " + lastDir;
+                    Toast.makeText(act, msg, Toast.LENGTH_LONG).show();
+                    if (ref[0] != null) ref[0].dismiss();
                 } catch (Throwable t) {
-                    Toast.makeText(act, "写文件失败: " + t, Toast.LENGTH_LONG).show();
+                    Toast.makeText(act, "导出失败: " + t, Toast.LENGTH_LONG).show();
                 }
-            });
-
-            dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
-                boolean u = withUin.isChecked();
-                remember(act, u);
-                Export.toClipboard(act, buildAll(groups, u));
-                Toast.makeText(act, "已复制 " + total + " 条", Toast.LENGTH_SHORT).show();
-                dlg.dismiss();
-            });
+                return;
+            }
+            String text = buildAll(groups, u);
+            String key = fileNameKey(groups);
+            try {
+                String path = Export.toFile(act, key, text);
+                Toast.makeText(act, "已导出 " + total + " 条 → " + path, Toast.LENGTH_LONG).show();
+                if (ref[0] != null) ref[0].dismiss();
+            } catch (Throwable t) {
+                Toast.makeText(act, "写文件失败: " + t, Toast.LENGTH_LONG).show();
+            }
         });
 
+        LinearLayout acts = new LinearLayout(act);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        acts.setGravity(Gravity.CENTER_VERTICAL);
+        acts.addView(cancel, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams lpCp = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        lpCp.leftMargin = Ui.dp(act, 8);
+        acts.addView(copy, lpCp);
+        LinearLayout.LayoutParams lpOk = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1.5f);
+        lpOk.leftMargin = Ui.dp(act, 10);
+        acts.addView(ok, lpOk);
+        LinearLayout.LayoutParams aLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        aLp.topMargin = Ui.dp(act, 18);
+        sheet.addView(acts, aLp);
+
+        final Dialog dlg = new Dialog(act);
+        dlg.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dlg.setContentView(sheet);
+        dlg.setCanceledOnTouchOutside(true);
+        ref[0] = dlg;
+        dress(dlg, act, 0.9f);
         dlg.show();
+        dress(dlg, act, 0.9f);
+    }
+
+    /** 透明背景浮层，宽度按屏宽比例 */
+    private static void dress(Dialog d, Activity act, float widthFrac) {
+        try {
+            Window w = d.getWindow();
+            if (w == null) return;
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            w.setGravity(Gravity.CENTER);
+            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setDimAmount(0.45f);
+            int sw = act.getResources().getDisplayMetrics().widthPixels;
+            w.setLayout((int) (sw * widthFrac), ViewGroup.LayoutParams.WRAP_CONTENT);
+        } catch (Throwable ignored) {
+        }
     }
 
     /** 记住这次的选择，下次打开面板沿用 */
@@ -164,9 +229,5 @@ public final class PickedExport {
             sb.append(Export.build(e.getKey(), e.getValue(), withUin));
         }
         return sb.toString();
-    }
-
-    private static int dp(Activity a, int v) {
-        return (int) (v * a.getResources().getDisplayMetrics().density);
     }
 }

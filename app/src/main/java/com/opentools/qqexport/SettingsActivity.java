@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
-import android.text.InputType;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.EditText;
@@ -120,7 +119,7 @@ public final class SettingsActivity extends Activity {
     private void addSwitch(LinearLayout card, boolean first, String title, String sub,
                            final String key, boolean def) {
         if (!first) card.addView(Ui.divider(this));
-        card.addView(Ui.switchRow(this, title, sub, sp.getBoolean(key, def), (b, on) -> {
+        card.addView(Ui.switchRow(this, title, sub, sp.getBoolean(key, def), on -> {
             sp.edit().putBoolean(key, on).apply();
             toast(title + (on ? " 已开启" : " 已关闭"));
         }));
@@ -133,15 +132,14 @@ public final class SettingsActivity extends Activity {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.HORIZONTAL);
         box.setGravity(Gravity.CENTER_VERTICAL);
-        final EditText et = new EditText(this);
-        et.setInputType(InputType.TYPE_CLASS_NUMBER);
-        et.setText(String.valueOf(sp.getInt(key, def)));
-        et.setTextSize(15);
-        et.setGravity(Gravity.END);
-        box.addView(et, new LinearLayout.LayoutParams(
-                Ui.dp(this, 62), ViewGroup.LayoutParams.WRAP_CONTENT));
-        box.addView(Ui.text(this, unit, 12, Ui.colorSub(this), false));
-        TextView save = Ui.button(this, "保存", false, v -> {
+        final EditText et = Ui.numPill(this, String.valueOf(sp.getInt(key, def)));
+        box.addView(et);
+        TextView ut = Ui.text(this, unit, 12, Ui.colorSub(this), false);
+        LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ulp.leftMargin = Ui.dp(this, 4);
+        box.addView(ut, ulp);
+        TextView save = Ui.textButton(this, "保存", v -> {
             int val;
             try {
                 val = Integer.parseInt(et.getText().toString().trim());

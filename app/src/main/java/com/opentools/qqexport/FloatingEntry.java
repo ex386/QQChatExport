@@ -30,7 +30,7 @@ public final class FloatingEntry {
         btn.setPadding(p, p / 2, p, p / 2);
 
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(0xCC3B7CF6);
+        bg.setColor(0xCC3482FF);
         bg.setCornerRadius(999);
         btn.setBackground(bg);
 

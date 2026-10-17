@@ -216,7 +216,7 @@ public final class MultiSelectHook {
             btn.setPadding(dp(ctx, 10), p, dp(ctx, 10), p);
 
             GradientDrawable bg = new GradientDrawable();
-            bg.setColor(0xFF3B7CF6);
+            bg.setColor(0xFF3482FF);
             bg.setCornerRadius(dp(ctx, 13));
             btn.setBackground(bg);
 
