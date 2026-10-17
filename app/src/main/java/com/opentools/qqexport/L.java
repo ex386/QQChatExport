@@ -17,6 +17,10 @@ public final class L {
     public static void i(String msg) {
         if (verbose) out(false, msg);
     }
+    /** 诊断日志：不受 verbose 开关影响，只在关键失败点用 */
+    public static void d(String msg) {
+        out(false, msg);
+    }
 
     public static void e(String msg) {
         out(true, msg);

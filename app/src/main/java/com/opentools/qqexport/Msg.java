@@ -48,6 +48,8 @@ public class Msg {
         public String md5;
         public long size;
         public int w, h;
+        /** 其它可能的本地路径（QQ 把多档缩略图塞在 HashMap 里，这里全收） */
+        public final java.util.List<String> alts = new java.util.ArrayList<>();
 
         /** 是不是可以落盘成媒体文件的片段 */
         public boolean media() {
@@ -258,6 +260,8 @@ public class Msg {
                 p.w = (int) Reflect.L(v, "picWidth");
                 p.h = (int) Reflect.L(v, "picHeight");
                 p.thumb = firstMapValue(Reflect.get(v, "thumbPath"));
+                collect(p, v, "sourcePath", "originPath", "localPath");
+                collectMap(p, Reflect.get(v, "thumbPath"));
                 return p;
             }
             case "pttElement": {
@@ -267,6 +271,7 @@ public class Msg {
                 p.size = Reflect.L(v, "fileSize");
                 String t = str(v, "text");                 // QQ 自带的语音转文字
                 if (t != null && !t.trim().isEmpty()) p.text = p.text + " " + t.trim();
+                collect(p, v, "filePath");
                 return p;
             }
             case "videoElement": {
@@ -276,6 +281,8 @@ public class Msg {
                 p.size = Reflect.L(v, "fileSize");
                 p.w = (int) Reflect.L(v, "thumbWidth");
                 p.h = (int) Reflect.L(v, "thumbHeight");
+                collect(p, v, "filePath");
+                collectMap(p, Reflect.get(v, "thumbPath"));
                 return p;
             }
             case "fileElement": {
@@ -284,6 +291,7 @@ public class Msg {
                 p.path = firstStr(v, "filePath");
                 p.name = n;
                 p.size = Reflect.L(v, "fileSize");
+                collect(p, v, "filePath", "fileMediaPath", "localPath");
                 return p;
             }
             case "faceElement": {
@@ -299,6 +307,7 @@ public class Msg {
                 p.name = n;
                 p.w = (int) Reflect.L(v, "imageWidth");
                 p.h = (int) Reflect.L(v, "imageHeight");
+                collect(p, v, "staticFacePath", "dynamicFacePath");
                 return p;
             }
             case "replyElement": {
@@ -353,6 +362,32 @@ public class Msg {
             if (v instanceof String && !((String) v).isEmpty()) return (String) v;
         }
         return null;
+    }
+
+    /** 把元素上若干个「可能装路径」的字段都收进候选列表，去重且跳过空值 */
+    private static void collect(Part p, Object o, String... names) {
+        for (String n : names) {
+            Object v = Reflect.get(o, n);
+            if (!(v instanceof String)) continue;
+            add(p, (String) v);
+        }
+    }
+
+    /** HashMap 形态的路径桶（QQ 的 thumbPath 是「宽度 -> 文件」）全收 */
+    private static void collectMap(Part p, Object map) {
+        if (!(map instanceof Map)) return;
+        for (Object k : ((Map<?, ?>) map).keySet()) {
+            Object v = ((Map<?, ?>) map).get(k);
+            if (v instanceof String) add(p, (String) v);
+        }
+    }
+
+    private static void add(Part p, String s) {
+        if (s == null) return;
+        String t = s.trim();
+        if (t.isEmpty()) return;
+        if (t.equals(p.path) || t.equals(p.thumb)) return;
+        if (!p.alts.contains(t)) p.alts.add(t);
     }
 
     private static String str(Object o, String... names) {

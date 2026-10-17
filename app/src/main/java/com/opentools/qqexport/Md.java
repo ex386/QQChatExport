@@ -61,6 +61,7 @@ public final class Md {
 
     /** 复制过程用的临时状态 */
     private static final class Scope {
+        final Context ctx;
         final File dir;
         final Map<String, String> seen = new HashMap<>();
         public int media;
@@ -72,7 +73,8 @@ public final class Md {
         boolean on = true;
         /** 单文件体积上限，0 表示不限制 */
         long maxBytes;
-        Scope(File dir) {
+        Scope(Context ctx, File dir) {
+            this.ctx = ctx;
             this.dir = dir;
         }
     }
@@ -91,7 +93,8 @@ public final class Md {
         if (!imgDir.isDirectory() && !imgDir.mkdirs()) {
             throw new IOException("无法创建媒体目录: " + imgDir);
         }
-        Scope sc = new Scope(imgDir);
+        Media.reset();
+        Scope sc = new Scope(ctx, imgDir);
         sc.on = Prefs.bool(Prefs.K_MEDIA, Prefs.D_MEDIA);
         int maxMb = Prefs.num(Prefs.K_MEDIA_MAX_MB, Prefs.D_MEDIA_MAX_MB);
         sc.maxBytes = maxMb > 0 ? maxMb * 1024L * 1024L : 0L;
@@ -118,6 +121,8 @@ public final class Md {
         r.media = sc.media;
         r.missing = sc.missing;
         r.skipped = sc.skipped;
+        L.d("media: 汇总 " + Media.summary() + " copied=" + sc.media
+            + " missing=" + sc.missing + " skipped=" + sc.skipped);
         return r;
     }
 
@@ -267,20 +272,39 @@ public final class Md {
     /* ================= 媒体落盘 ================= */
 
     /**
+     * 收集一个片段所有可能的本地路径。
+     * withPath 非空时只用它（视频封面这种一个 Part 要取两份文件的场景，
+     * 绝不能回落到别的文件，否则 md 里图片链接会指向视频本体）。
+     */
+    private static java.util.List<String> cands(Msg.Part p, String withPath) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (withPath != null) {
+            if (!withPath.isEmpty()) out.add(withPath);
+            return out;
+        }
+        if (p.path != null && !p.path.isEmpty()) out.add(p.path);
+        if (p.thumb != null && !p.thumb.isEmpty() && !out.contains(p.thumb)) out.add(p.thumb);
+        if (p.alts != null) {
+            for (String s : p.alts) {
+                if (s != null && !s.isEmpty() && !out.contains(s)) out.add(s);
+            }
+        }
+        return out;
+    }
+
+    /**
      * 把一个片段的媒体文件复制到 images/，返回文件名（不含目录）。
      * withPath 非空时优先用它（视频封面这种同一个 Part 里要取两份文件的情况）。
      */
     private static String media(Scope sc, String kind, Msg.Part p, String withPath) {
         if (!sc.on) return null;
         File src;
-        if (withPath != null) {
-            src = exist(withPath);
-        } else {
-            src = exist(p.path);
-            if (src == null) src = exist(p.thumb);
-        }
+        java.util.List<String> cands = cands(p, withPath);
+        src = Media.resolve(sc.ctx, cands, p.md5, p.size, p.name);
         if (src == null) {
             sc.missing++;
+            L.d("media: MISS kind=" + kind + " path=" + p.path + " thumb=" + p.thumb
+                + " alts=" + p.alts + " md5=" + p.md5 + " size=" + p.size + " name=" + p.name);
             return null;
         }
         if (sc.maxBytes > 0 && src.length() > sc.maxBytes) {
