@@ -34,7 +34,9 @@ android {
     buildTypes {
         release {
             minifyEnabled false
-            if (ksFile.exists()) signingConfig signingConfigs.release
+            // 有正式密钥就用正式签名；否则退回 debug 密钥，
+            // 保证 CI 产物可直接安装（不能用于上架/分发）
+            signingConfig ksFile.exists() ? signingConfigs.release : signingConfigs.debug
         }
         debug {
             minifyEnabled false
