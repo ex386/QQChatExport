@@ -380,7 +380,19 @@ public final class MultiSelectHook {
                 map.put(m.uniseq, m);
             }
         }
-        L.i("勾选来源=" + from + " raw=" + (raw == null ? -1 : raw.size()) + " -> " + map.size());
+        // v2.0 第三兜底：QQ 多选事件被我们旁听到的集合（Selection）。
+        // 场景=刚点开多选栏就按导出，live 查询可能还没返回、sLastPicked 也还是空的，
+        // 但 AddSelectMsg 事件早就把勾选集攒下来了，只有这条路能读到。
+        if (map.isEmpty()) {
+            List<Msg> sel = Selection.list();
+            for (Msg m : sel) {
+                if (m == null || m.uniseq == 0L) continue;
+                map.put(m.uniseq, m);
+            }
+            if (!map.isEmpty()) from = from + "+selection";
+        }
+        L.i("勾选来源=" + from + " raw=" + (raw == null ? -1 : raw.size())
+                + " selection=" + Selection.size() + " -> " + map.size());
         return new ArrayList<>(map.values());
     }
 

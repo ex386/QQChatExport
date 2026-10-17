@@ -53,15 +53,16 @@ public final class Html {
         public int media;
         public int missing;
         public int skipped;
-
+        /** 其中有多少个媒体是联网补下来的（v2.0） */
+        public int net;
         /** 提示里优先给能整体拷走的 zip */
         public String path() {
             return zipPath != null ? zipPath : htmlPath;
         }
-
         public String summary() {
             StringBuilder sb = new StringBuilder("已导出 ").append(msgs).append(" 条消息");
             if (media > 0) sb.append("、").append(media).append(" 个媒体文件");
+            if (net > 0) sb.append("（其中 ").append(net).append(" 个联网补全）");
             if (missing > 0) sb.append("（").append(missing).append(" 个媒体源文件缺失）");
             if (skipped > 0) sb.append("（").append(skipped).append(" 个超出体积上限未导出）");
             return sb.toString();
@@ -89,7 +90,9 @@ public final class Html {
         sc.on = Prefs.bool(Prefs.K_MEDIA, Prefs.D_MEDIA);
         int maxMb = Prefs.num(Prefs.K_MEDIA_MAX_MB, Prefs.D_MEDIA_MAX_MB);
         sc.maxBytes = maxMb > 0 ? maxMb * 1024L * 1024L : 0L;
-
+        // v2.0：正文生成前并发预取可下载的图片，避免 media() 串行等网络
+        Net.reset();
+        if (sc.on) Net.prefetch(ctx, list);
         StringBuilder sb = new StringBuilder(16384);
         head(sb, sessionKey, title, list, withUin);
 
@@ -118,6 +121,7 @@ public final class Html {
         r.media = sc.media;
         r.missing = sc.missing;
         r.skipped = sc.skipped;
+        r.net = sc.net;
 
         File zip = new File(root, dir.getName() + ".zip");
         try {

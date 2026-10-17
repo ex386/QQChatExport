@@ -24,9 +24,11 @@ import java.util.Map;
  *       images/
  *           img_1.jpg  face_2.png  voice_3.amr  video_4.mp4  file_5_报告.pdf
  *
- * 媒体来源全部是 QQ 已经落盘的本地文件（PicElement.sourcePath、
+ * 媒体来源以 QQ 已经落盘的本地文件为主（PicElement.sourcePath、
  * PttElement.filePath、VideoElement.filePath、FileElement.filePath、
- * MarketFaceElement.staticFacePath），不需要联网下载。
+ * MarketFaceElement.staticFacePath），本地找不到时 v2.0 会按
+ * PicElement.originImageUrl 联网补齐图片；语音/视频/文件在 NT 内核里没有 URL 字段，
+ * 仍然只能依赖本地缓存。
  * 同一个文件在聊天里出现多次时只复制一份，md 里复用同一个相对路径。
  */
 public final class Md {
@@ -50,9 +52,12 @@ public final class Md {
         public int media;
         public int missing;
         public int skipped;
+        /** 其中有多少个媒体是联网补下来的（v2.0） */
+        public int net;
         public String summary() {
             StringBuilder sb = new StringBuilder("已导出 ").append(msgs).append(" 条消息");
             if (media > 0) sb.append("、").append(media).append(" 个媒体文件");
+            if (net > 0) sb.append("（其中 ").append(net).append(" 个联网补全）");
             if (missing > 0) sb.append("（").append(missing).append(" 个媒体源文件缺失）");
             if (skipped > 0) sb.append("（").append(skipped).append(" 个超出体积上限未导出）");
             return sb.toString();
@@ -66,6 +71,8 @@ public final class Md {
         final Map<String, String> seen = new HashMap<>();
         public int media;
         public int missing;
+        /** 其中有多少个是走网络补下来的（v2.0） */
+        public int net;
         /** 因为超过体积上限而没复制的媒体数量 */
         public int skipped;
         int n;
@@ -98,6 +105,10 @@ public final class Md {
         sc.on = Prefs.bool(Prefs.K_MEDIA, Prefs.D_MEDIA);
         int maxMb = Prefs.num(Prefs.K_MEDIA_MAX_MB, Prefs.D_MEDIA_MAX_MB);
         sc.maxBytes = maxMb > 0 ? maxMb * 1024L * 1024L : 0L;
+        // v2.0：正文生成前先把能下载的图片并发预取到缓存目录，
+        // 否则 media() 阶段会一张一张串行等网络，一次导出能卡上几分钟。
+        Net.reset();
+        if (sc.on) Net.prefetch(ctx, list);
         StringBuilder sb = head(sessionKey, title, list, withUin);
         String day = "";
         int idx = 0;
@@ -121,8 +132,9 @@ public final class Md {
         r.media = sc.media;
         r.missing = sc.missing;
         r.skipped = sc.skipped;
-        L.d("media: 汇总 " + Media.summary() + " copied=" + sc.media
-            + " missing=" + sc.missing + " skipped=" + sc.skipped);
+        r.net = sc.net;
+        L.d("media: 汇总 " + Media.summary() + " " + Net.summary() + " copied=" + sc.media
+            + " missing=" + sc.missing + " skipped=" + sc.skipped + " net=" + sc.net);
         return r;
     }
 
@@ -307,11 +319,21 @@ public final class Md {
         } else {
             src = Media.resolve(sc.ctx, cands, p.md5, p.size, p.name, p.uuid);
         }
+        if (src == null && withPath == null && Net.usable(p.url)) {
+            // v2.0 联网兜底：本地缓存里确实没有这个文件时，改从服务器拉原图。
+            // 只对「本体」请求生效（withPath == null）；封面这类指定路径的调用不去猜。
+            File net = Net.get(sc.ctx, p.url);
+            if (net != null) {
+                src = net;
+                sc.net++;
+                L.d("media: NET kind=" + kind + " url=" + p.url);
+            }
+        }
         if (src == null) {
             sc.missing++;
             L.d("media: MISS kind=" + kind + " path=" + p.path + " thumb=" + p.thumb
                 + " alts=" + p.alts + " md5=" + p.md5 + " uuid=" + p.uuid
-                + " size=" + p.size + " name=" + p.name);
+                + " size=" + p.size + " name=" + p.name + " url=" + p.url);
             return null;
         }
         if (sc.maxBytes > 0 && src.length() > sc.maxBytes) {

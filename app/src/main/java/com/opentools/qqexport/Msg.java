@@ -48,6 +48,14 @@ public class Msg {
         public String md5;
         /** 视频的 fileUuid：QQ 用它给 cache/superplayer 里的文件命名（<uuid>_<ts>_1.mp4） */
         public String uuid;
+        /**
+         * 可直接用 HTTP 下载的原始地址（v2.0）。
+         *
+         * <p>本地缓存没命中时用它兜底：图片取 {@code PicElement.originImageUrl}，
+         * 表情包取 {@code MarketFaceElement.emojiWebUrl}。视频/语音/文件在 NT 内核里
+         * 不暴露 URL，只能靠 {@code IKernelMsgService.downloadRichMedia} 拉。</p>
+         */
+        public String url;
         public long size;
         public int w, h;
         /** 其它可能的本地路径（QQ 把多档缩略图塞在 HashMap 里，这里全收） */
@@ -261,6 +269,11 @@ public class Msg {
                 p.size = Reflect.L(v, "fileSize");
                 p.w = (int) Reflect.L(v, "picWidth");
                 p.h = (int) Reflect.L(v, "picHeight");
+                // v2.0：内核里的图片元素没有独立的 elementId，fileUuid 就是下载标识，
+                // 补上后既能按 uuid 命中本地缓存，也能据此推断出缓存文件名。
+                p.uuid = firstStr(v, "fileUuid");
+                // v2.0：原图直链，本地没落盘时用它联网补全（gchat.qpic.cn，免鉴权）
+                p.url = http(firstStr(v, "originImageUrl"), firstStr(v, "summary"));
                 p.thumb = firstMapValue(Reflect.get(v, "thumbPath"));
                 collect(p, v, "sourcePath", "originPath", "localPath");
                 collectMap(p, Reflect.get(v, "thumbPath"));
@@ -359,6 +372,21 @@ public class Msg {
         if (v == null) return null;
         String s = String.valueOf(v);
         return s.isEmpty() ? null : s;
+    }
+
+    /**
+     * 从若干候选里挑出第一个 http(s) 地址（v2.0）。
+     *
+     * <p>{@code PicElement.summary} 在闪照等场景下是图片 URL，但它也可能是普通描述文本，
+     * 所以只在 {@code originImageUrl} 为空时才会走到第二个参数，并且必须通过协议校验。</p>
+     */
+    private static String http(String... cands) {
+        for (String s : cands) {
+            if (s == null) continue;
+            String t = s.trim();
+            if (t.startsWith("http://") || t.startsWith("https://")) return t;
+        }
+        return null;
     }
 
     private static String firstMapValue(Object map) {

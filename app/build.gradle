@@ -16,8 +16,8 @@ android {
         applicationId "com.opentools.qqexport"
         minSdk 21
         targetSdk 34
-        versionCode 9
-        versionName "1.9"
+        versionCode 10
+        versionName "2.0"
     }
     // Markdown 导出末尾要打印工具版本，需要 BuildConfig；AGP 8 起默认不生成
     buildFeatures {

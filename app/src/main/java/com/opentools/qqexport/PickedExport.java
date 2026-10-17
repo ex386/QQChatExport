@@ -120,55 +120,53 @@ public final class PickedExport {
             if (ref[0] != null) ref[0].dismiss();
         });
         TextView ok = Ui.button(act, Fmt.action(fmt), true, v -> {
-            boolean u = uin[0];
+            final boolean u = uin[0];
             remember(act, u);
-            if (Fmt.HTML.equals(fmt)) {
+            if (ref[0] != null) ref[0].dismiss();
+            Toast.makeText(act, "开始导出 " + total + " 条，请稍候…",
+                    Toast.LENGTH_SHORT).show();
+            // v2.0：导出可能联网补全图片，必须放到后台线程，否则主线程等网络 → ANR
+            new Thread(() -> {
+                String msg;
                 try {
-                    int n = 0;
-                    String lastPath = null;
-                    for (Map.Entry<String, List<Msg>> e : groups.entrySet()) {
-                        Html.Result r = Html.export(act, e.getKey(), e.getValue(), u);
-                        n += r.msgs;
-                        lastPath = r.path();
+                    if (Fmt.HTML.equals(fmt)) {
+                        int n = 0;
+                        String lastPath = null;
+                        for (Map.Entry<String, List<Msg>> e : groups.entrySet()) {
+                            Html.Result r = Html.export(act, e.getKey(), e.getValue(), u);
+                            n += r.msgs;
+                            lastPath = r.path();
+                        }
+                        msg = multi
+                                ? "已导出 " + n + " 条，分属 " + groups.size() + " 个会话，各自一个 zip"
+                                : "已导出 " + n + " 条 → " + lastPath;
+                    } else if (Fmt.MD.equals(fmt)) {
+                        int n = 0;
+                        String lastDir = null;
+                        for (Map.Entry<String, List<Msg>> e : groups.entrySet()) {
+                            Md.Result r = Md.export(act, e.getKey(), e.getValue(), u);
+                            n += r.msgs;
+                            lastDir = r.dir;
+                        }
+                        msg = multi
+                                ? "已导出 " + n + " 条，分属 " + groups.size() + " 个会话，各自一个目录"
+                                : "已导出 " + n + " 条 → " + lastDir;
+                    } else {
+                        String path = Export.toFile(act, fileNameKey(groups), buildAll(groups, u));
+                        msg = "已导出 " + total + " 条 → " + path;
                     }
-                    String msg = multi
-                            ? "已导出 " + n + " 条，分属 " + groups.size() + " 个会话，各自一个 zip"
-                            : "已导出 " + n + " 条 → " + lastPath;
-                    Toast.makeText(act, msg, Toast.LENGTH_LONG).show();
-                    if (ref[0] != null) ref[0].dismiss();
+                    L.d("PickedExport: done total=" + total);
                 } catch (Throwable t) {
-                    Toast.makeText(act, "导出失败: " + t, Toast.LENGTH_LONG).show();
+                    L.e(t);
+                    msg = "导出失败: " + t;
                 }
-                return;
-            }
-            if (Fmt.MD.equals(fmt)) {
+                final String m = msg;
                 try {
-                    int n = 0;
-                    String lastDir = null;
-                    for (Map.Entry<String, List<Msg>> e : groups.entrySet()) {
-                        Md.Result r = Md.export(act, e.getKey(), e.getValue(), u);
-                        n += r.msgs;
-                        lastDir = r.dir;
-                    }
-                    String msg = multi
-                            ? "已导出 " + n + " 条，分属 " + groups.size() + " 个会话，各自一个目录"
-                            : "已导出 " + n + " 条 → " + lastDir;
-                    Toast.makeText(act, msg, Toast.LENGTH_LONG).show();
-                    if (ref[0] != null) ref[0].dismiss();
+                    act.runOnUiThread(() -> Toast.makeText(act, m, Toast.LENGTH_LONG).show());
                 } catch (Throwable t) {
-                    Toast.makeText(act, "导出失败: " + t, Toast.LENGTH_LONG).show();
+                    L.e(t);
                 }
-                return;
-            }
-            String text = buildAll(groups, u);
-            String key = fileNameKey(groups);
-            try {
-                String path = Export.toFile(act, key, text);
-                Toast.makeText(act, "已导出 " + total + " 条 → " + path, Toast.LENGTH_LONG).show();
-                if (ref[0] != null) ref[0].dismiss();
-            } catch (Throwable t) {
-                Toast.makeText(act, "写文件失败: " + t, Toast.LENGTH_LONG).show();
-            }
+            }, "qqexport-picked").start();
         });
 
         LinearLayout acts = new LinearLayout(act);

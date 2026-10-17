@@ -247,50 +247,53 @@ public final class ExportDialog {
             if (ref[0] != null) ref[0].dismiss();
         });
         TextView copy = Ui.button(act, "复制", false, v -> {
-            List<Msg> picked = resolve(mode[0], all, sel, tFrom, tTo, sFrom, sTo);
-            if (picked.isEmpty()) {
-                toast(act, "该范围没有消息");
+            Picked pk = resolve2(mode[0], all, sel, tFrom, tTo, sFrom, sTo);
+            if (pk.list.isEmpty()) {
+                toast(act, pk.err != null ? pk.err : emptyHint(all, key));
                 return;
             }
-            Export.toClipboard(act, Export.build(key, picked, uin()));
-            toast(act, "已复制 " + picked.size() + " 条");
+            Export.toClipboard(act, Export.build(key, pk.list, uin()));
+            toast(act, "已复制 " + pk.list.size() + " 条");
             if (ref[0] != null) ref[0].dismiss();
         });
         TextView ok = Ui.button(act, Fmt.action(fmt), true, v -> {
-            List<Msg> picked = resolve(mode[0], all, sel, tFrom, tTo, sFrom, sTo);
-            if (picked.isEmpty()) {
-                toast(act, "该范围没有消息");
+            Picked pk = resolve2(mode[0], all, sel, tFrom, tTo, sFrom, sTo);
+            if (pk.list.isEmpty()) {
+                toast(act, pk.err != null ? pk.err : emptyHint(all, key));
                 return;
             }
-            if (Fmt.HTML.equals(fmt)) {
+            // v2.0：导出会联网补全缺失图片（最坏几分钟），必须脱离 UI 线程，
+            // 否则主线程被 HttpURLConnection 堵住 → ANR。
+            final List<Msg> picked = pk.list;
+            final boolean withUin = uin();
+            if (ref[0] != null) ref[0].dismiss();
+            Toast.makeText(act, "开始导出 " + picked.size() + " 条，请稍候…",
+                    Toast.LENGTH_SHORT).show();
+            new Thread(() -> {
+                String msg;
                 try {
-                    Html.Result r = Html.export(act, key, picked, uin());
-                    Toast.makeText(act, r.summary() + "\n→ " + r.path(),
-                            Toast.LENGTH_LONG).show();
-                    if (ref[0] != null) ref[0].dismiss();
+                    if (Fmt.HTML.equals(fmt)) {
+                        Html.Result r = Html.export(act, key, picked, withUin);
+                        msg = r.summary() + "\n→ " + r.path();
+                    } else if (Fmt.MD.equals(fmt)) {
+                        Md.Result r = Md.export(act, key, picked, withUin);
+                        msg = r.summary() + "\n→ " + r.dir;
+                    } else {
+                        String path = Export.toFile(act, key, Export.build(key, picked, withUin));
+                        msg = "已导出 " + picked.size() + " 条 → " + path;
+                    }
+                    L.d("ExportDialog: done msgs=" + picked.size());
                 } catch (Throwable t) {
-                    Toast.makeText(act, "导出失败: " + t, Toast.LENGTH_LONG).show();
+                    L.e(t);
+                    msg = "导出失败: " + t;
                 }
-                return;
-            }
-            if (Fmt.MD.equals(fmt)) {
+                final String m = msg;
                 try {
-                    Md.Result r = Md.export(act, key, picked, uin());
-                    Toast.makeText(act, r.summary() + "\n→ " + r.dir, Toast.LENGTH_LONG).show();
-                    if (ref[0] != null) ref[0].dismiss();
+                    act.runOnUiThread(() -> Toast.makeText(act, m, Toast.LENGTH_LONG).show());
                 } catch (Throwable t) {
-                    Toast.makeText(act, "导出失败: " + t, Toast.LENGTH_LONG).show();
+                    L.e(t);
                 }
-                return;
-            }
-            try {
-                String path = Export.toFile(act, key, Export.build(key, picked, uin()));
-                Toast.makeText(act, "已导出 " + picked.size() + " 条 → " + path,
-                        Toast.LENGTH_LONG).show();
-                if (ref[0] != null) ref[0].dismiss();
-            } catch (Throwable t) {
-                Toast.makeText(act, "写文件失败: " + t, Toast.LENGTH_LONG).show();
-            }
+            }, "qqexport-export").start();
         });
 
         LinearLayout.LayoutParams lpC = new LinearLayout.LayoutParams(0,
@@ -344,29 +347,92 @@ public final class ExportDialog {
         root.addView(panel, lp);
     }
 
-    private static List<Msg> resolve(int mode, List<Msg> all, boolean[] sel,
-                                     TextView tFrom, TextView tTo,
-                                     EditText sFrom, EditText sTo) {
+    /** resolve 的诊断结果：范围解析失败时 err 非空，能直接告诉用户是哪里写错了 */
+    static final class Picked {
+        List<Msg> list = Collections.emptyList();
+        String err;
+    }
+
+    /**
+     * v2.0：原实现把整段包在 try 里 catch 成空列表，时间格式写错、seq 不是数字
+     * 全都表现成“该范围没有消息”，用户完全看不出问题在哪（这正是“读不到选择的范围”）。
+     * 现在把解析错误与“范围内确实没消息”分开，并把原始输入打进日志。
+     */
+    private static Picked resolve2(int mode, List<Msg> all, boolean[] sel,
+                                   TextView tFrom, TextView tTo,
+                                   EditText sFrom, EditText sTo) {
+        Picked p = new Picked();
         try {
             if (mode == 0) {
-                long a = IN.parse(tFrom.getText().toString()).getTime();
-                long b = IN.parse(tTo.getText().toString()).getTime();
-                return Export.byTime(all, Math.min(a, b), Math.max(a, b));
+                String a0 = tFrom.getText().toString().trim();
+                String b0 = tTo.getText().toString().trim();
+                Date da = null, db = null;
+                try {
+                    da = IN.parse(a0);
+                } catch (Throwable t) {
+                    L.e(t);
+                }
+                try {
+                    db = IN.parse(b0);
+                } catch (Throwable t) {
+                    L.e(t);
+                }
+                if (da == null || db == null) {
+                    String bad = da == null ? a0 : b0;
+                    p.err = "时间格式不对：" + (bad.isEmpty() ? "（空）" : bad);
+                    L.e("resolve2: time parse fail from=" + a0 + " to=" + b0);
+                    return p;
+                }
+                long a = da.getTime();
+                // v2.0：输入精度只到分钟（yyyy-MM-dd HH:mm），SimpleDateFormat 会把秒归零。
+                // 直接拿它当上界，等于把“结束时间所在那一分钟”里的所有消息都排除，
+                // 起止选成同一分钟时结果必然为空——这就是“读不到选择的范围”的一个真因。
+                // 补到该分钟的 59.999s 上限，等值区间也能命中。
+                long b = db.getTime() + 59999L;
+                L.d("resolve2: time " + a0 + " ~ " + b0 + " all=" + all.size());
+                p.list = Export.byTime(all, Math.min(a, b), Math.max(a, b));
+                return p;
             }
             if (mode == 1) {
-                long a = Long.parseLong(sFrom.getText().toString().trim());
-                long b = Long.parseLong(sTo.getText().toString().trim());
-                return Export.bySeq(all, a, b);
+                String a0 = sFrom.getText().toString().trim();
+                String b0 = sTo.getText().toString().trim();
+                long a, b;
+                try {
+                    a = Long.parseLong(a0);
+                } catch (Throwable t) {
+                    p.err = "起始 seq 不是数字：" + (a0.isEmpty() ? "（空）" : a0);
+                    L.e("resolve2: seq from fail [" + a0 + "] all=" + all.size());
+                    return p;
+                }
+                try {
+                    b = Long.parseLong(b0);
+                } catch (Throwable t) {
+                    p.err = "结束 seq 不是数字：" + (b0.isEmpty() ? "（空）" : b0);
+                    L.e("resolve2: seq to fail [" + b0 + "] all=" + all.size());
+                    return p;
+                }
+                L.d("resolve2: seq " + a + " ~ " + b + " all=" + all.size());
+                p.list = Export.bySeq(all, a, b);
+                return p;
             }
             Set<Long> picked = new HashSet<>();
             for (int i = 0; i < sel.length; i++) if (sel[i]) picked.add(all.get(i).uniseq);
             if (picked.isEmpty()) {
                 for (Msg m : all) picked.add(m.uniseq);   // 未勾选时按全部处理
             }
-            return Export.byPicked(all, picked);
+            L.d("resolve2: picked=" + picked.size() + " sel=" + sel.length + " all=" + all.size());
+            p.list = Export.byPicked(all, picked);
+            return p;
         } catch (Throwable t) {
-            return Collections.emptyList();
+            p.err = "范围解析失败：" + t;
+            L.e(t);
+            return p;
         }
+    }
+
+    /** 空结果提示带上缓存规模与会话 key，便于判断是不是取错了会话 */
+    private static String emptyHint(List<Msg> all, String key) {
+        return "该范围没有消息（当前会话缓存 " + all.size() + " 条，key=" + key + "）";
     }
 
     /** 把窗口压成透明背景的浮层，宽度按屏宽比例 */

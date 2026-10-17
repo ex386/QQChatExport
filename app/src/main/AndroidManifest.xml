@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
+    <!-- v2.0：导出时本地缓存缺失的图片要按 PicElement.originImageUrl 联网补全。
+         模块本身跑在宿主 QQ 进程里，实际联网权限归宿主；这里显式声明是为了
+         让模块 APK 的权限面自洽，也避免部分 ROM 的静态检查把出站连接拦掉 -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- Android 11+ 包可见性：不声明的话 getLaunchIntentForPackage("com.tencent.mobileqq")
          会直接返回 null，表现为“提示没有安装” -->
     <queries>
