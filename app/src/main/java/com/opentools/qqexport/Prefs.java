@@ -30,7 +30,9 @@ public final class Prefs {
     public static final String K_LIMIT = "limit_per_session";
     /** 详细日志 */
     public static final String K_LOG = "verbose_log";
-    /** 导出为 Markdown + 媒体文件（关闭则回退成单个 TXT） */
+    /** 导出格式：html / md / txt，见 {@link Fmt} */
+    public static final String K_FMT = "export_fmt";
+    /** 旧开关：只有 true/false 两态，v1.6 起作为 K_FMT 缺失时的回退 */
     public static final String K_MD = "export_md";
     /** 导出时把图片/语音/视频/文件复制到 images/ */
     public static final String K_MEDIA = "export_media";
@@ -40,6 +42,8 @@ public final class Prefs {
     public static final boolean D_MULTI = true;
     public static final boolean D_UIN = true;
     public static final boolean D_MD = true;
+    /** 默认导出网页：手机上能直接翻图、点开视频 */
+    public static final String D_FMT = "html";
     public static final boolean D_MEDIA = true;
     public static final int D_MEDIA_MAX_MB = 50;
     public static final int D_LIMIT = 20000;

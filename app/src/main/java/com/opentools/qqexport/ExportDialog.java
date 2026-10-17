@@ -55,7 +55,7 @@ public final class ExportDialog {
             return;
         }
 
-        final boolean md = Prefs.bool(Prefs.K_MD, Prefs.D_MD);
+        final String fmt = Fmt.get(act);
         final Dialog[] ref = new Dialog[1];
         final int[] mode = {0};
         final Runnable[] sync = new Runnable[1];
@@ -247,13 +247,24 @@ public final class ExportDialog {
             toast(act, "已复制 " + picked.size() + " 条");
             if (ref[0] != null) ref[0].dismiss();
         });
-        TextView ok = Ui.button(act, md ? "导出 Markdown" : "导出 TXT", true, v -> {
+        TextView ok = Ui.button(act, Fmt.action(fmt), true, v -> {
             List<Msg> picked = resolve(mode[0], all, sel, tFrom, tTo, sFrom, sTo);
             if (picked.isEmpty()) {
                 toast(act, "该范围没有消息");
                 return;
             }
-            if (md) {
+            if (Fmt.HTML.equals(fmt)) {
+                try {
+                    Html.Result r = Html.export(act, key, picked, uin());
+                    Toast.makeText(act, r.summary() + "\n→ " + r.path(),
+                            Toast.LENGTH_LONG).show();
+                    if (ref[0] != null) ref[0].dismiss();
+                } catch (Throwable t) {
+                    Toast.makeText(act, "导出失败: " + t, Toast.LENGTH_LONG).show();
+                }
+                return;
+            }
+            if (Fmt.MD.equals(fmt)) {
                 try {
                     Md.Result r = Md.export(act, key, picked, uin());
                     Toast.makeText(act, r.summary() + "\n→ " + r.dir, Toast.LENGTH_LONG).show();

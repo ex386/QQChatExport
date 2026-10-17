@@ -31,10 +31,10 @@ import java.util.Map;
  */
 public final class Md {
 
-    private static final SimpleDateFormat FMT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA);
-    private static final SimpleDateFormat DAY = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA);
-    private static final SimpleDateFormat HMS = new SimpleDateFormat("HH:mm:ss", Locale.CHINA);
-    private static final SimpleDateFormat STAMP = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.CHINA);
+    static final SimpleDateFormat FMT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA);
+    static final SimpleDateFormat DAY = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA);
+    static final SimpleDateFormat HMS = new SimpleDateFormat("HH:mm:ss", Locale.CHINA);
+    static final SimpleDateFormat STAMP = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.CHINA);
 
     public static final String MD_NAME = "chat.md";
     public static final String IMG_DIR = "images";
@@ -60,7 +60,7 @@ public final class Md {
     }
 
     /** 复制过程用的临时状态 */
-    private static final class Scope {
+    static final class Scope {
         final Context ctx;
         final File dir;
         final Map<String, String> seen = new HashMap<>();
@@ -128,7 +128,7 @@ public final class Md {
 
     /* ================= 文件骨架 ================= */
 
-    private static File root(Context ctx) {
+    static File root(Context ctx) {
         File dir = ctx.getExternalFilesDir("QQExport");
         if (dir == null) dir = new File(ctx.getFilesDir(), "QQExport");
         if (!dir.exists() && !dir.mkdirs()) {
@@ -140,7 +140,7 @@ public final class Md {
         return dir;
     }
 
-    private static File unique(File parent, String name) {
+    static File unique(File parent, String name) {
         File f = new File(parent, name);
         if (!f.exists()) return f;
         for (int i = 2; i < 500; i++) {
@@ -150,13 +150,13 @@ public final class Md {
         return new File(parent, name + "_" + System.currentTimeMillis());
     }
 
-    private static void write(File f, String text) throws IOException {
+    static void write(File f, String text) throws IOException {
         try (OutputStream os = new FileOutputStream(f)) {
             os.write(text.getBytes("UTF-8"));
         }
     }
 
-    private static StringBuilder head(String key, String title, List<Msg> list, boolean withUin) {
+    static StringBuilder head(String key, String title, List<Msg> list, boolean withUin) {
         StringBuilder sb = new StringBuilder(4096);
         sb.append("# ").append(esc(title)).append("\n\n");
         sb.append("| 项 | 值 |\n");
@@ -173,7 +173,7 @@ public final class Md {
         return sb;
     }
 
-    private static void who(StringBuilder sb, Msg m, boolean withUin) {
+    static void who(StringBuilder sb, Msg m, boolean withUin) {
         String name = m.isSend ? "我" : (m.nick == null || m.nick.isEmpty() ? "未知" : m.nick);
         sb.append("**").append(esc(name)).append("**");
         if (withUin && m.senderUin != null && !m.senderUin.isEmpty()) {
@@ -184,7 +184,7 @@ public final class Md {
 
     /* ================= 正文 ================= */
 
-    private static void body(StringBuilder sb, Scope sc, Msg m, int idx) {
+    static void body(StringBuilder sb, Scope sc, Msg m, int idx) {
         if (m.parts.isEmpty()) {
             String t = esc(m.text);
             if (!t.isEmpty()) sb.append(t.replace("\n", "  \n")).append("\n\n");
@@ -276,7 +276,7 @@ public final class Md {
      * withPath 非空时只用它（视频封面这种一个 Part 要取两份文件的场景，
      * 绝不能回落到别的文件，否则 md 里图片链接会指向视频本体）。
      */
-    private static java.util.List<String> cands(Msg.Part p, String withPath) {
+    static java.util.List<String> cands(Msg.Part p, String withPath) {
         java.util.List<String> out = new java.util.ArrayList<>();
         if (withPath != null) {
             if (!withPath.isEmpty()) out.add(withPath);
@@ -296,7 +296,7 @@ public final class Md {
      * 把一个片段的媒体文件复制到 images/，返回文件名（不含目录）。
      * withPath 非空时优先用它（视频封面这种同一个 Part 里要取两份文件的情况）。
      */
-    private static String media(Scope sc, String kind, Msg.Part p, String withPath) {
+    static String media(Scope sc, String kind, Msg.Part p, String withPath) {
         if (!sc.on) return null;
         File src;
         java.util.List<String> cands = cands(p, withPath);
@@ -334,7 +334,7 @@ public final class Md {
         return name;
     }
 
-    private static boolean copy(File src, File dst) {
+    static boolean copy(File src, File dst) {
         InputStream in = null;
         OutputStream out = null;
         try {
@@ -353,7 +353,7 @@ public final class Md {
         }
     }
 
-    private static void close(Object o) {
+    static void close(Object o) {
         try {
             if (o instanceof InputStream) ((InputStream) o).close();
             else if (o instanceof OutputStream) ((OutputStream) o).close();
@@ -361,7 +361,7 @@ public final class Md {
         }
     }
 
-    private static File exist(String path) {
+    static File exist(String path) {
         if (path == null) return null;
         String p = path.trim();
         if (p.isEmpty()) return null;
@@ -376,7 +376,7 @@ public final class Md {
     }
 
     /** QQ 缓存里 chatimg 里的文件没有扩展名，所以按文件头判断 */
-    private static String ext(File f, String nameHint) {
+    static String ext(File f, String nameHint) {
         String fromName = extOf(f.getName());
         if (fromName == null || fromName.isEmpty()) fromName = extOf(nameHint);
         if (fromName != null && !fromName.isEmpty() && !"tmp".equals(fromName)) return fromName;
@@ -384,7 +384,7 @@ public final class Md {
         return magic != null ? magic : "bin";
     }
 
-    private static String extOf(String n) {
+    static String extOf(String n) {
         if (n == null) return null;
         int i = n.lastIndexOf('.');
         if (i <= 0 || i >= n.length() - 1) return null;
@@ -397,7 +397,7 @@ public final class Md {
         return e;
     }
 
-    private static String sniff(File f) {
+    static String sniff(File f) {
         InputStream in = null;
         try {
             byte[] b = new byte[16];
@@ -428,7 +428,7 @@ public final class Md {
     /* ================= 小工具 ================= */
 
     /** 去掉目录名里的非法字符，并限制长度（含 emoji 的昵称也不会炸） */
-    private static String safe(String s) {
+    static String safe(String s) {
         if (s == null) return "";
         StringBuilder b = new StringBuilder();
         for (int i = 0; i < s.length() && b.length() < 48; i++) {
@@ -443,17 +443,17 @@ public final class Md {
         return b.toString().trim();
     }
 
-    private static String trimExt(String n) {
+    static String trimExt(String n) {
         int i = n.lastIndexOf('.');
         return i > 0 ? n.substring(0, i) : n;
     }
 
-    private static String stripBracket(String s) {
+    static String stripBracket(String s) {
         if (s == null) return "";
         return s.replace("[", "").replace("]", "").trim();
     }
 
-    private static String size(long bytes) {
+    static String size(long bytes) {
         if (bytes <= 0) return "";
         if (bytes < 1024) return " (" + bytes + " B)";
         if (bytes < 1024L * 1024) return " (" + (bytes / 1024) + " KB)";
@@ -462,7 +462,7 @@ public final class Md {
     }
 
     /** Markdown 转义：只处理会破坏结构的符号，正文尽量原样可读 */
-    private static String esc(String s) {
+    static String esc(String s) {
         if (s == null) return "";
         StringBuilder b = new StringBuilder(s.length() + 16);
         for (int i = 0; i < s.length(); i++) {
@@ -486,7 +486,7 @@ public final class Md {
     }
 
     /** 单聊拿对方昵称，群聊只有群号可用 */
-    private static String title(String key, List<Msg> list) {
+    static String title(String key, List<Msg> list) {
         String uin = key;
         int bar = key.indexOf('|');
         if (bar > 0) uin = key.substring(0, bar);

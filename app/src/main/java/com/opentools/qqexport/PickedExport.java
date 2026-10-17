@@ -60,7 +60,7 @@ public final class PickedExport {
 
         final int total = total(groups);
         final boolean multi = groups.size() > 1;
-        final boolean md = Prefs.bool(Prefs.K_MD, Prefs.D_MD);
+        final String fmt = Fmt.get(act);
         final boolean[] uin = {Prefs.bool(Prefs.K_UIN, Prefs.D_UIN)};
         final Dialog[] ref = new Dialog[1];
 
@@ -119,10 +119,29 @@ public final class PickedExport {
             Toast.makeText(act, "已复制 " + total + " 条", Toast.LENGTH_SHORT).show();
             if (ref[0] != null) ref[0].dismiss();
         });
-        TextView ok = Ui.button(act, md ? "导出 Markdown" : "导出 TXT", true, v -> {
+        TextView ok = Ui.button(act, Fmt.action(fmt), true, v -> {
             boolean u = uin[0];
             remember(act, u);
-            if (md) {
+            if (Fmt.HTML.equals(fmt)) {
+                try {
+                    int n = 0;
+                    String lastPath = null;
+                    for (Map.Entry<String, List<Msg>> e : groups.entrySet()) {
+                        Html.Result r = Html.export(act, e.getKey(), e.getValue(), u);
+                        n += r.msgs;
+                        lastPath = r.path();
+                    }
+                    String msg = multi
+                            ? "已导出 " + n + " 条，分属 " + groups.size() + " 个会话，各自一个 zip"
+                            : "已导出 " + n + " 条 → " + lastPath;
+                    Toast.makeText(act, msg, Toast.LENGTH_LONG).show();
+                    if (ref[0] != null) ref[0].dismiss();
+                } catch (Throwable t) {
+                    Toast.makeText(act, "导出失败: " + t, Toast.LENGTH_LONG).show();
+                }
+                return;
+            }
+            if (Fmt.MD.equals(fmt)) {
                 try {
                     int n = 0;
                     String lastDir = null;

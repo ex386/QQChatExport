@@ -64,17 +64,36 @@ public final class Media {
         return guess.isDirectory() ? guess : null;
     }
 
-    /** 图片缓存目录列表，按优先级排 */
+    /**
+     * 媒体缓存目录列表，按优先级排（图片在前，视频/文件在后）。
+     *
+     * 目录是照 QQ 9.2.x NT 内核的真实落盘布局写的，实测于
+     * /sdcard/Android/data/com.tencent.mobileqq：
+     *   Tencent/MobileQQ/chatpic/{chatraw,chatimg,chatthumb}  聊天图
+     *   Tencent/QQ_Images                                     QQ 图片（注意不在 MobileQQ 下）
+     *   Tencent/MobileQQ/photo                                聊天原图另一处落盘
+     *   cache/superplayer/<uin>/<md5>_1.mp4                   视频本体
+     *   Tencent/MobileQQ/shortvideo/<hash>/                    短视频
+     *   cache/shortvideo/thumbs                                视频封面
+     *   Tencent/QQfile_recv/<uuid>/                            文件/视频传输
+     */
     private static List<File> cacheRoots(Context ctx) {
-        List<File> out = new ArrayList<>(4);
+        List<File> out = new ArrayList<>(12);
         File base = qqBase(ctx);
-        if (base != null) {
-            File pic = new File(base, "Tencent/MobileQQ/chatpic");
-            addDir(out, new File(pic, "chatraw"));
-            addDir(out, new File(pic, "chatimg"));
-            addDir(out, new File(pic, "chatthumb"));
-            addDir(out, new File(base, "Tencent/MobileQQ/QQ_Images"));
-        }
+        if (base == null) return out;
+        File pic = new File(base, "Tencent/MobileQQ/chatpic");
+        addDir(out, new File(pic, "chatraw"));
+        addDir(out, new File(pic, "chatimg"));
+        addDir(out, new File(pic, "chatthumb"));
+        // QQ_Images 实际在 Tencent/ 下，旧代码写成 Tencent/MobileQQ/QQ_Images，永远命中不到
+        addDir(out, new File(base, "Tencent/QQ_Images"));
+        addDir(out, new File(base, "Tencent/QQ_Images/QQEditPic"));
+        addDir(out, new File(base, "Tencent/MobileQQ/photo"));
+        // 视频：本体在 cache/superplayer/<uin>/，文件名形如 <md5>_1.mp4
+        addDir(out, new File(base, "cache/superplayer"));
+        addDir(out, new File(base, "Tencent/MobileQQ/shortvideo"));
+        addDir(out, new File(base, "cache/shortvideo"));
+        addDir(out, new File(base, "Tencent/QQfile_recv"));
         return out;
     }
 

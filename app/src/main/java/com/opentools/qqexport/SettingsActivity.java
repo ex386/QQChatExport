@@ -63,11 +63,9 @@ public final class SettingsActivity extends Activity {
         /* ---------------- 导出格式 ---------------- */
         root.addView(Ui.section(this, "导出格式"));
         LinearLayout fmt = Ui.card(this);
-        addSwitch(fmt, true, "导出为 Markdown",
-                "输出 chat.md + images/ 目录，图片、语音、视频、文件一并打包；关闭则退回单个 TXT",
-                Prefs.K_MD, Prefs.D_MD);
+        addFormatRow(fmt, true);
         addSwitch(fmt, false, "复制媒体文件",
-                "把聊天里的图片/表情/语音/视频/文件复制进 images/；关闭后只保留文字占位",
+                "把图片/表情/语音/视频/文件复制进导出目录（网页版是 media/，Markdown 是 images/）；关闭后只留文字占位",
                 Prefs.K_MEDIA, Prefs.D_MEDIA);
         addNumberRow(fmt, false, "媒体体积上限",
                 "单个文件超过该值时不复制，只留文字占位。0 表示不限制",
@@ -123,6 +121,45 @@ public final class SettingsActivity extends Activity {
             sp.edit().putBoolean(key, on).apply();
             toast(title + (on ? " 已开启" : " 已关闭"));
         }));
+    }
+
+    /** 导出格式三选一：网页(zip) / Markdown / 纯文本，写进 Prefs.K_FMT */
+    private void addFormatRow(LinearLayout card, boolean first) {
+        if (!first) card.addView(Ui.divider(this));
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(Gravity.CENTER_VERTICAL);
+        final String[] cur = {Fmt.get(this)};
+        final TextView[] btns = new TextView[Fmt.KEYS.length];
+        final Runnable paint = () -> {
+            for (int i = 0; i < btns.length; i++) {
+                TextView b = btns[i];
+                if (b == null) continue;
+                boolean on = Fmt.KEYS[i].equals(cur[0]);
+                b.setTextColor(on ? Ui.colorText(this) : Ui.colorSub(this));
+                b.setBackground(Ui.round(this,
+                        on ? Ui.colorFill(this) : 0x00000000, 9));
+            }
+        };
+        for (int i = 0; i < Fmt.KEYS.length; i++) {
+            final String k = Fmt.KEYS[i];
+            TextView b = Ui.textButton(this, Fmt.LABELS[i], v -> {
+                cur[0] = k;
+                Fmt.set(this, k);
+                paint.run();
+                toast("导出格式：" + Fmt.LABELS[Fmt.index(k)]);
+            });
+            btns[i] = b;
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            if (i > 0) lp.leftMargin = Ui.dp(this, 6);
+            box.addView(b, lp);
+        }
+        paint.run();
+        card.addView(Ui.textRow(this, "导出格式",
+                "网页：index.html + media/ 整体打成 zip，能翻图、听语音、放视频；"
+                        + "Markdown：chat.md + images/；纯文本：单个 txt",
+                box));
     }
 
     private void addNumberRow(LinearLayout card, boolean first, String title, String sub,
