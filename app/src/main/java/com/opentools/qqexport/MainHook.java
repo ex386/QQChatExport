@@ -27,7 +27,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * 不再需要猜混淆名。
  *
  * 注入点：
- *   1) AIOMsgItem       → 采集消息进 Store
+ *   1) AIOMsgItem       → 采集消息进 Store，同时把列表项丢进 Items 对象池
  *   2) MultiSelectEvent → 旁听多选勾选状态进 Selection（不改它行为）
  *   3) MultiSelectBarVB → 在多选栏右侧插入“导出”按钮
  *   4) AIO Activity     → 聊天页悬浮导出按钮（受设置开关控制）
@@ -77,6 +77,14 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             L.e(t);
         }
+        /* v3.0：旁听 QQ 自己的多选事件。
+           这是“读不到勾选范围”的正解——v2.0 里 Selection 只被读、从不被写，
+           等于第三级兜底永远是空集合，用户一点导出就必然落到“按时间范围导出”。 */
+        try {
+            EventWatch.install(lp.classLoader);
+        } catch (Throwable t) {
+            L.e(t);
+        }
         try {
             hookAioActivity();
         } catch (Throwable t) {
@@ -112,6 +120,14 @@ public class MainHook implements IXposedHookLoadPackage {
                             Store.ingestSingle(p.thisObject);
                         } catch (Throwable t) {
                             L.e(t);
+                        }
+                        /* v3.0：顺手把这个列表项扔进对象池。
+                           用户在多选模式下勾了哪几条，之后要靠
+                           multifoward.b.j(aioCtx, item) 逐条回问 QQ，
+                           这里不存就永远没有入参。 */
+                        try {
+                            Items.put(p.thisObject);
+                        } catch (Throwable ignored) {
                         }
                     }
                 });

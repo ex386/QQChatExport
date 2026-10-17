@@ -32,21 +32,33 @@ import de.robv.android.xposed.XposedHelpers;
  *
  * 两件事：
  *   A. 在 MultiSelectBarVB 的操作栏里插一个“导出”按钮；
- *   B. 点按钮时**现取**QQ 当前勾选的消息列表，不再旁听事件。
+ *   B. 点按钮时取出 QQ 当前勾选的消息列表。
  *
- * 为什么不再旁听事件：旧实现 hook 了 MultiSelectEvent$* 共 5 个类的构造器（24 个），
- * 靠“按字段类型猜”把勾选状态镜像下来，既脆弱（字段名/类型一变就错），
- * 又容易把长按菜单带崩。改成现取后，这条链路完全依赖 QQ 自己的读接口：
+ * <p><b>取勾选：四条路，从快到硬依次兜底（v3.0）</b></p>
+ * <pre>
+ *   1) live   multifoward.b.g(aioCtx) -> List&lt;AIOMsgItem&gt;   现取
+ *   2) cached 上次 g() 的返回值（我们 hook 了 g 自己，留一份）
+ *   3) selection {@link Selection} —— {@link EventWatch} 旁听 MultiSelectEvent$*
+ *                 （AddSelectMsg / RemoveSelectMsg / SetSelectMsgList /
+ *                  RemoveAllSelectMsg / SetSelectMode）攒下来的镜像
+ *   4) scan   {@link Items} 池里的 AIOMsgItem 逐条问
+ *             multifoward.b.j(aioCtx, AIOMsgItem)Z —— QQ 自己的“这条勾了没”
+ * </pre>
  *
- *   multifoward.b.a                       （静态单例）
- *   multifoward.b.g(com.tencent.aio.api.runtime.a) -> List<AIOMsgItem>
- *   FrameworkVM.getMContext() -> com.tencent.mvi.api.runtime.b（实际是 aio runtime ctx）
+ * <p>v2.0 只留了 1/2/3，却把 3 的写入端（事件旁听）删了，于是
+ * {@code Selection.list()} 恒为空、第三级兜底事实上不存在。v3.0 把写入端补回来，
+ * 并新增第 4 级：不依赖任何事件是否被接住，只要用户还停在多选模式，
+ * 直接问 QQ 内存里的状态。</p>
  *
- * 其中 g 的真实签名（classes5.dex 实测）：
- *   M inst  g  (Lcom/tencent/aio/api/runtime/a;)Ljava/util/List;
- * 运行时 ctx 由 MultiSelectBarVM（FrameworkVM 子类）的 getMContext() 拿到，
- * 同时我们也 hook 住 g() 自身，把最近一次的入参/返回值留作兜底——
- * 这样即使 VM 那条路走不通，也能用上一次 QQ 自己算出来的勾选列表。
+ * <p>签名实证（classes5.dex / 9.2.35）：</p>
+ * <pre>
+ *   M inst  g (Lcom/tencent/aio/api/runtime/a;)Ljava/util/List;
+ *   Z inst  j (Lcom/tencent/aio/api/runtime/a;Lcom/tencent/…/AIOMsgItem;)
+ * </pre>
+ * 运行时 aio ctx 从 MultiSelectBarVB.createVM() 返回的 VM 上按方法名
+ * （getMContext / getSafetyContext）扫出来，并用包名 com.tencent.aio.api.runtime
+ * 校验类型——该类在 36 个 dex 里都找不到独立声明，说明是接口/外部实现，
+ * 只能靠包名前缀判。
  *
  * 布局来源：MultiSelectBarVB$mOperationLayout$2.invoke() 返回
  *   LinearLayout（classes5.dex 实测），这是真正造操作栏的地方，直接插进去最稳。
@@ -56,6 +68,8 @@ public final class MultiSelectHook {
     private static final String CLS_BAR = "com.tencent.mobileqq.aio.input.multiselect.MultiSelectBarVB";
     private static final String CLS_BAR_LAMBDA = CLS_BAR + "$mOperationLayout$2";
     private static final String CLS_FWD = "com.tencent.mobileqq.aio.msglist.holder.component.multifoward.b";
+    /** NT 列表项实体（multifoward.b.j 的第二个参数就是它） */
+    private static final String CLS_ITEM = "com.tencent.mobileqq.aio.msg.AIOMsgItem";
 
     private static final String TAG = "qq-export-multiselect-btn";
 
@@ -75,6 +89,11 @@ public final class MultiSelectHook {
     /** 最近一次 g(ctx) 的入参（aio runtime context）与返回（勾选列表） */
     private static volatile Object sLastCtx;
     private static volatile List<?> sLastPicked;
+    /** multifoward.b.j(ctx, AIOMsgItem)Z —— 逐条问“这条勾了没”，加锁缓存避免反复扫方法表 */
+    private static volatile Method sJMethod;
+    private static volatile boolean sJBroken;
+    /** Selection 镜像超过这个年龄就认为不是当前勾选（12 小时；跨天残留兜底） */
+    private static final long STALE_MS = 12L * 60L * 60L * 1000L;
 
     private MultiSelectHook() {
     }
@@ -380,19 +399,31 @@ public final class MultiSelectHook {
                 map.put(m.uniseq, m);
             }
         }
-        // v2.0 第三兜底：QQ 多选事件被我们旁听到的集合（Selection）。
+        // v3.0 第三兜底：EventWatch 旁听到的多选事件攒进 Selection 的集合。
         // 场景=刚点开多选栏就按导出，live 查询可能还没返回、sLastPicked 也还是空的，
-        // 但 AddSelectMsg 事件早就把勾选集攒下来了，只有这条路能读到。
-        if (map.isEmpty()) {
-            List<Msg> sel = Selection.list();
-            for (Msg m : sel) {
+        // 但 AddSelectMsg 事件早就把勾选集记下来了，只有这条路能读到。
+        long age = Selection.ageMs();
+        if (map.isEmpty() && Selection.size() > 0 && age >= 0 && age < STALE_MS) {
+            for (Msg m : Selection.list()) {
                 if (m == null || m.uniseq == 0L) continue;
                 map.put(m.uniseq, m);
             }
             if (!map.isEmpty()) from = from + "+selection";
         }
+        // v3.0 第四兜底：直接问 QQ 自己。
+        // Items 里攒着列表滑过的 AIOMsgItem，逐条调 multifoward.b.j(ctx, item)
+        // 问“这条勾了没”。这条不依赖任何事件是否被我们接住——只要 QQ 的多选状态
+        // 还在内存里就能读到，是四条路里最硬的一条。
+        if (map.isEmpty()) {
+            for (Msg m : scanByItems()) {
+                if (m == null || m.uniseq == 0L) continue;
+                map.put(m.uniseq, m);
+            }
+            if (!map.isEmpty()) from = from + "+scan";
+        }
         L.i("勾选来源=" + from + " raw=" + (raw == null ? -1 : raw.size())
-                + " selection=" + Selection.size() + " -> " + map.size());
+                + " selection=" + Selection.size() + "(age=" + age + "ms)"
+                + " items=" + Items.size() + " -> " + map.size());
         return new ArrayList<>(map.values());
     }
 
@@ -427,6 +458,8 @@ public final class MultiSelectHook {
             L.i("拿不到 aio runtime context，跳过现取");
             return null;
         }
+        // 回写：第四级兜底 scanByItems() 也吃这个 ctx，这里取到的就是最可信的一份
+        sLastCtx = ctx;
 
         Method g = msgListMethod(inst.getClass());
         if (g == null) {
@@ -440,6 +473,88 @@ public final class MultiSelectHook {
             L.e("调用 g(ctx) 失败: " + t);
             return null;
         }
+    }
+
+    /**
+     * 第四兜底：拿 {@link Items} 池里攒下的 AIOMsgItem，逐条问 QQ「这条勾了没」。
+     *
+     * <p>为什么这条最硬：前三条路（g(ctx) 现取 / 上次 g 的缓存 / 事件旁听）都需要
+     * “某个时机刚好被我们看到”或“QQ 的列表接口已经算好”，而这条只依赖两件事——
+     * 列表里的 AIOMsgItem 对象（我们在构造器里就收下了）和 QQ 自己的判定函数
+     * {@code multifoward.b.j(aioCtx, AIOMsgItem)Z}。只要用户还停在多选模式，
+     * QQ 内存里的勾选状态就一定还在，问谁都不如问它自己。</p>
+     */
+    private static List<Msg> scanByItems() {
+        List<Msg> out = new ArrayList<>();
+        List<?> pool;
+        try {
+            pool = Items.snapshot();
+        } catch (Throwable t) {
+            return out;
+        }
+        if (pool.isEmpty()) return out;
+        Object inst = sFwd;
+        if (inst == null) inst = forward();
+        if (inst == null) return out;
+        Object ctx = sLastCtx;
+        if (!isAioCtx(ctx)) ctx = vmContext();
+        if (!isAioCtx(ctx)) {
+            L.i("没有 aio ctx，跳过 Items 逐条判定");
+            return out;
+        }
+        Method j = pickedOneMethod(inst.getClass());
+        if (j == null) {
+            L.i("multifoward 里没有 j(aioCtx, AIOMsgItem)，跳过逐条判定");
+            return out;
+        }
+        int hit = 0;
+        for (Object it : pool) {
+            if (it == null) continue;
+            try {
+                Object r = j.invoke(inst, ctx, it);
+                if (!(r instanceof Boolean) || !((Boolean) r).booleanValue()) continue;
+                Msg m = Msg.from(it);
+                if (m == null || m.uniseq == 0L) continue;
+                out.add(m);
+                hit++;
+            } catch (Throwable ignored) {
+            }
+        }
+        L.i("Items 逐条判定: 池=" + pool.size() + " 命中=" + hit);
+        return out;
+    }
+
+    /**
+     * 在 multifoward.b 上找 {@code boolean j(aioCtx, AIOMsgItem)}。
+     *
+     * <p>不按方法名硬编码：混淆名会随版本漂移，但“2 个参数、返回 boolean、
+     * 第一个是 com.tencent.aio.api.runtime.*、第二个是 AIOMsgItem”这个签名不会。</p>
+     */
+    private static Method pickedOneMethod(Class<?> c) {
+        if (sJBroken) return null;
+        Method cached = sJMethod;
+        if (cached != null) return cached;
+        for (Method m : allMethods(c)) {
+            if (m.getParameterCount() != 2) continue;
+            Class<?> r = m.getReturnType();
+            if (r != boolean.class && r != Boolean.class) continue;
+            Class<?>[] p = m.getParameterTypes();
+            if (!p[0].getName().startsWith("com.tencent.aio.api.runtime")) continue;
+            if (!p[1].getName().equals(CLS_ITEM)) continue;
+            try {
+                m.setAccessible(true);
+            } catch (Throwable ignored) {
+            }
+            sJMethod = m;
+            try {
+                XposedBridge.log("[QQExport] 勾选查询方法: " + m.getName()
+                        + "(aioCtx, AIOMsgItem)Z");
+            } catch (Throwable ignored) {
+            }
+            return m;
+        }
+        sJBroken = true;
+        return null;
     }
 
     private static Object vmContext() {
