@@ -10,6 +10,12 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // Xposed API 不在 Maven Central（404），官方单独发布在此仓库
+        // de.robv.android.xposed:api:82
+        maven {
+            url 'https://api.xposed.info/'
+            allowInsecureProtocol = false
+        }
     }
 }
 
