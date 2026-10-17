@@ -75,11 +75,12 @@ public final class PickedExport {
         withUin.setChecked(Prefs.bool(Prefs.K_UIN, Prefs.D_UIN));
         root.addView(withUin);
 
+        final boolean md = Prefs.bool(Prefs.K_MD, Prefs.D_MD);
         final AlertDialog dlg = new AlertDialog.Builder(act)
                 .setTitle("导出勾选的聊天记录")
                 .setView(root)
                 .setNegativeButton("取消", null)
-                .setPositiveButton("导出TXT", null)
+                .setPositiveButton(md ? "导出Markdown" : "导出TXT", null)
                 .setNeutralButton("复制到剪切板", null)
                 .create();
 
@@ -87,6 +88,25 @@ public final class PickedExport {
             dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
                 boolean u = withUin.isChecked();
                 remember(act, u);
+                if (md) {
+                    try {
+                        int n = 0;
+                        String lastDir = null;
+                        for (Map.Entry<String, List<Msg>> e : groups.entrySet()) {
+                            Md.Result r = Md.export(act, e.getKey(), e.getValue(), u);
+                            n += r.msgs;
+                            lastDir = r.dir;
+                        }
+                        String msg = groups.size() == 1
+                                ? "已导出 " + n + " 条 → " + lastDir
+                                : "已导出 " + n + " 条，分属 " + groups.size() + " 个会话，各自一个目录";
+                        Toast.makeText(act, msg, Toast.LENGTH_LONG).show();
+                        dlg.dismiss();
+                    } catch (Throwable t) {
+                        Toast.makeText(act, "导出失败: " + t, Toast.LENGTH_LONG).show();
+                    }
+                    return;
+                }
                 String text = buildAll(groups, u);
                 String key = fileNameKey(groups);
                 try {

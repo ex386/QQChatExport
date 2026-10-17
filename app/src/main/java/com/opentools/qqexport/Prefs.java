@@ -30,10 +30,18 @@ public final class Prefs {
     public static final String K_LIMIT = "limit_per_session";
     /** 详细日志 */
     public static final String K_LOG = "verbose_log";
-
+    /** 导出为 Markdown + 媒体文件（关闭则回退成单个 TXT） */
+    public static final String K_MD = "export_md";
+    /** 导出时把图片/语音/视频/文件复制到 images/ */
+    public static final String K_MEDIA = "export_media";
+    /** 单个媒体文件的体积上限（MB），超过只留文字，不复制；0 表示不限制 */
+    public static final String K_MEDIA_MAX_MB = "media_max_mb";
     public static final boolean D_FLOATING = true;
     public static final boolean D_MULTI = true;
     public static final boolean D_UIN = true;
+    public static final boolean D_MD = true;
+    public static final boolean D_MEDIA = true;
+    public static final int D_MEDIA_MAX_MB = 50;
     public static final int D_LIMIT = 20000;
     public static final boolean D_LOG = false;
 
@@ -53,6 +61,7 @@ public final class Prefs {
     private static Method mStr;
     private static Method mReload;
     private static boolean tried;
+    private static volatile long lastSync;
 
     private static synchronized boolean initX() {
         if (xsp != null) return true;
@@ -82,7 +91,16 @@ public final class Prefs {
         }
     }
 
+    /** 读设置前轻量同步一次，设置页改完最多 1 秒生效 */
+    private static void sync() {
+        long now = System.currentTimeMillis();
+        if (now - lastSync < 1000L) return;
+        lastSync = now;
+        reload();
+    }
+
     public static boolean bool(String key, boolean def) {
+        sync();
         if (initX()) {
             try {
                 Object v = mBool.invoke(xsp, key, def);
@@ -98,6 +116,7 @@ public final class Prefs {
     }
 
     public static int num(String key, int def) {
+        sync();
         if (initX()) {
             try {
                 Object v = mInt.invoke(xsp, key, def);
@@ -113,6 +132,7 @@ public final class Prefs {
     }
 
     public static String str(String key, String def) {
+        sync();
         if (initX()) {
             try {
                 Object v = mStr.invoke(xsp, key, def);

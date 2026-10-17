@@ -3,14 +3,10 @@ package com.opentools.qqexport;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.graphics.Color;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
-import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Button;
-import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -20,11 +16,11 @@ import android.widget.Toast;
 /**
  * 模块设置页（桌面图标进入）。
  *
- * 这里写的是模块自己进程的 SharedPreferences（qqexport.xml）；
- * QQ 进程里由 {@link Prefs#bool}/{@link Prefs#num} 通过 XSharedPreferences 读同一份文件。
- * 所以改动立即落盘，但要等 QQ 重新走一次注入点（进/出聊天页、或重进多选模式）才读到新值。
+ * 写的是模块自己进程的 SharedPreferences（qqexport.xml）；QQ 进程里由
+ * {@link Prefs#bool}/{@link Prefs#num} 通过 XSharedPreferences 读同一份文件。
+ * Prefs 侧做了节流 reload，所以改完设置最多一秒就对 QQ 进程生效，不用重启。
  *
- * 不依赖 AndroidX：全部用原生控件拼装，避免为了一个设置页引入 appcompat。
+ * 不依赖 AndroidX：全部用原生控件 + {@link Ui} 拼装。
  */
 public final class SettingsActivity extends Activity {
 
@@ -36,141 +32,156 @@ public final class SettingsActivity extends Activity {
         sp = Prefs.local(this);
 
         ScrollView sv = new ScrollView(this);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(16);
-        root.setPadding(pad, pad, pad, pad);
+        sv.setBackgroundColor(Ui.colorBg(this));
+        LinearLayout root = Ui.column(this);
+        int pad = Ui.dp(this, 16);
+        root.setPadding(pad, pad, pad, Ui.dp(this, 28));
         sv.addView(root, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        /* ---------- 标题 ---------- */
-        TextView title = new TextView(this);
-        title.setText("QQ聊天导出");
-        title.setTextSize(22);
-        root.addView(title);
+        /* ---------------- 标题 ---------------- */
+        root.addView(Ui.text(this, "QQ聊天导出", 22, Ui.colorText(this), true));
+        TextView ver = Ui.text(this, "v" + version() + " · 作用域 com.tencent.mobileqq · 本地运行",
+                11, Ui.colorSub(this), false);
+        ver.setPadding(0, Ui.dp(this, 5), 0, 0);
+        root.addView(ver);
+        TextView tip = Ui.text(this, "在 LSPosed 中启用本模块并勾选 QQ；设置改完即时生效",
+                11, Ui.colorSub(this), false);
+        tip.setPadding(0, Ui.dp(this, 3), 0, 0);
+        root.addView(tip);
 
-        TextView sub = new TextView(this);
-        sub.setText("版本 " + version() + " · 作用域 com.tencent.mobileqq\n"
-                + "需在 LSPosed 中启用本模块并勾选 QQ，然后强制停止 QQ 一次");
-        sub.setTextSize(11);
-        sub.setPadding(0, dp(4), 0, dp(10));
-        root.addView(sub);
+        /* ---------------- 入口 ---------------- */
+        root.addView(Ui.section(this, "入口"));
+        LinearLayout entry = Ui.card(this);
+        addSwitch(entry, true, "聊天页悬浮按钮",
+                "聊天界面右下角显示「导出」圆钮，点开是完整筛选面板",
+                Prefs.K_FLOATING, Prefs.D_FLOATING);
+        addSwitch(entry, false, "长按多选栏按钮",
+                "长按消息进入多选后，多选栏右侧出现「导出」；已勾选时只导出勾选项",
+                Prefs.K_MULTI, Prefs.D_MULTI);
+        Ui.addCard(root, entry);
 
-        /* ---------- 入口 ---------- */
-        header(root, "入口");
-        addSwitch(root, "聊天页悬浮按钮", Prefs.K_FLOATING, Prefs.D_FLOATING,
-                "聊天界面右下角显示「导出」圆钮，点开是完整筛选面板");
-        addSwitch(root, "长按多选栏按钮", Prefs.K_MULTI, Prefs.D_MULTI,
-                "长按消息进入多选后，多选栏右侧出现「导出」；已勾选时只导出勾选项");
+        /* ---------------- 导出格式 ---------------- */
+        root.addView(Ui.section(this, "导出格式"));
+        LinearLayout fmt = Ui.card(this);
+        addSwitch(fmt, true, "导出为 Markdown",
+                "输出 chat.md + images/ 目录，图片、语音、视频、文件一并打包；关闭则退回单个 TXT",
+                Prefs.K_MD, Prefs.D_MD);
+        addSwitch(fmt, false, "复制媒体文件",
+                "把聊天里的图片/表情/语音/视频/文件复制进 images/；关闭后只保留文字占位",
+                Prefs.K_MEDIA, Prefs.D_MEDIA);
+        addNumberRow(fmt, false, "媒体体积上限",
+                "单个文件超过该值时不复制，只留文字占位。0 表示不限制",
+                Prefs.K_MEDIA_MAX_MB, Prefs.D_MEDIA_MAX_MB, 0, 4096, "MB");
+        Ui.addCard(root, fmt);
 
-        /* ---------- 导出格式 ---------- */
-        header(root, "导出格式");
-        addSwitch(root, "附带发送者 UIN", Prefs.K_UIN, Prefs.D_UIN,
-                "开启后形如 昵称(10001): 内容；关闭则只输出昵称");
+        /* ---------------- 显示 ---------------- */
+        root.addView(Ui.section(this, "显示"));
+        LinearLayout show = Ui.card(this);
+        addSwitch(show, true, "附带发送者 UIN",
+                "开启后形如 昵称(10001): 内容；关闭则只输出昵称",
+                Prefs.K_UIN, Prefs.D_UIN);
+        Ui.addCard(root, show);
 
-        /* ---------- 性能 ---------- */
-        header(root, "缓存");
-        TextView limitDesc = desc("每个会话最多缓存多少条消息（100 ~ 200000）。\n"
-                + "缓存只存在内存里，QQ 进程被杀后清空；调小可省内存，调大能导出更长的历史。");
-        root.addView(limitDesc);
+        /* ---------------- 缓存 ---------------- */
+        root.addView(Ui.section(this, "缓存"));
+        LinearLayout cache = Ui.card(this);
+        addNumberRow(cache, true, "每会话缓存条数",
+                "100 ~ 200000，只存在内存里；QQ 进程被杀后清空。调大能导出更长的历史",
+                Prefs.K_LIMIT, Prefs.D_LIMIT, 100, 200000, "条");
+        Ui.addCard(root, cache);
 
-        LinearLayout limitRow = new LinearLayout(this);
-        limitRow.setOrientation(LinearLayout.HORIZONTAL);
-        limitRow.setGravity(Gravity.CENTER_VERTICAL);
-        limitRow.setPadding(0, dp(4), 0, 0);
+        /* ---------------- 调试 ---------------- */
+        root.addView(Ui.section(this, "调试"));
+        LinearLayout dbg = Ui.card(this);
+        addSwitch(dbg, true, "详细日志",
+                "向 LSPosed 日志输出每条采集到的消息，排查用，平时关掉",
+                Prefs.K_LOG, Prefs.D_LOG);
+        Ui.addCard(root, dbg);
 
-        final EditText limitBox = new EditText(this);
-        limitBox.setInputType(InputType.TYPE_CLASS_NUMBER);
-        limitBox.setText(String.valueOf(sp.getInt(Prefs.K_LIMIT, Prefs.D_LIMIT)));
-        limitBox.setLayoutParams(new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        limitRow.addView(limitBox);
+        /* ---------------- 说明 ---------------- */
+        root.addView(Ui.section(this, "说明"));
+        LinearLayout doc = Ui.card(this);
+        addNote(doc, "· 消息从 QQ 的 NT 消息实体读取，只在 QQ 进程内做内存缓存，不读数据库、不联网、不上传。");
+        addNote(doc, "· 导出落在 QQ 自己的外部私有目录，每个会话一个子目录：");
+        addNote(doc, "   Android/data/com.tencent.mobileqq/files/QQExport/<会话>_<时间>/");
+        addNote(doc, "   chat.md 是正文，images/ 里是图片、表情、语音、视频、文件。");
+        addNote(doc, "· 关闭「导出为 Markdown」时退回单个 TXT：QQ_<会话>_<时间>.txt（不含媒体）。");
+        addNote(doc, "· Android 11+ 系统自带文件管理器看不到 Android/data，请用支持该目录的文件管理器打开。");
+        Ui.addCard(root, doc);
 
-        Button saveLimit = new Button(this);
-        saveLimit.setText("保存");
-        saveLimit.setOnClickListener(v -> {
-            int v2;
-            try {
-                v2 = Integer.parseInt(limitBox.getText().toString().trim());
-            } catch (Throwable t) {
-                toast("请输入数字");
-                return;
-            }
-            if (v2 < 100) v2 = 100;
-            if (v2 > 200000) v2 = 200000;
-            limitBox.setText(String.valueOf(v2));
-            sp.edit().putInt(Prefs.K_LIMIT, v2).apply();
-            toast("上限已设为 " + v2 + " 条，重进聊天页生效");
-        });
-        limitRow.addView(saveLimit);
-        root.addView(limitRow);
-
-        /* ---------- 调试 ---------- */
-        header(root, "调试");
-        addSwitch(root, "详细日志", Prefs.K_LOG, Prefs.D_LOG,
-                "向 LSPosed 日志输出每条采集到的消息，排查用，平时关掉");
-
-        /* ---------- 说明 ---------- */
-        header(root, "说明");
-        root.addView(desc(
-                "· 消息从 QQ 的 NT 消息实体（AIOMsgItem / MsgRecord）读取，只在 QQ 进程内做内存缓存。\n"
-                        + "· 导出文件写到本模块的外部私有目录：\n"
-                        + "  Android/data/com.opentools.qqexport/files/QQExport/\n"
-                        + "· 不读取本地数据库、不上传任何数据、不需要联网。\n"
-                        + "· 只在本人设备上导出本人可见的聊天内容。"));
-
-        Button openQq = new Button(this);
-        openQq.setText("打开 QQ");
-        openQq.setOnClickListener(v -> {
-            Intent i = getPackageManager().getLaunchIntentForPackage("com.tencent.mobileqq");
-            if (i == null) {
-                toast("未安装 QQ");
-                return;
-            }
-            try {
-                startActivity(i);
-            } catch (Throwable t) {
-                toast("启动失败: " + t);
-            }
-        });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(12);
-        root.addView(openQq, lp);
+        root.addView(Ui.button(this, "打开 QQ", true, v -> openQq()));
 
         setContentView(sv);
     }
 
-    /* ---------------- 小工具 ---------------- */
+    /* ---------------- 行构造 ---------------- */
 
-    private void addSwitch(LinearLayout parent, String label, String key, boolean def, String description) {
-        CheckBox cb = new CheckBox(this);
-        cb.setText(label);
-        cb.setChecked(sp.getBoolean(key, def));
-        cb.setOnCheckedChangeListener((v, checked) -> {
-            sp.edit().putBoolean(key, checked).apply();
-            toast(label + (checked ? " 已开启" : " 已关闭"));
+    private void addSwitch(LinearLayout card, boolean first, String title, String sub,
+                           final String key, boolean def) {
+        if (!first) card.addView(Ui.divider(this));
+        card.addView(Ui.switchRow(this, title, sub, sp.getBoolean(key, def), (b, on) -> {
+            sp.edit().putBoolean(key, on).apply();
+            toast(title + (on ? " 已开启" : " 已关闭"));
+        }));
+    }
+
+    private void addNumberRow(LinearLayout card, boolean first, String title, String sub,
+                              final String key, int def, final int min, final int max,
+                              final String unit) {
+        if (!first) card.addView(Ui.divider(this));
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(Gravity.CENTER_VERTICAL);
+        final EditText et = new EditText(this);
+        et.setInputType(InputType.TYPE_CLASS_NUMBER);
+        et.setText(String.valueOf(sp.getInt(key, def)));
+        et.setTextSize(15);
+        et.setGravity(Gravity.END);
+        box.addView(et, new LinearLayout.LayoutParams(
+                Ui.dp(this, 62), ViewGroup.LayoutParams.WRAP_CONTENT));
+        box.addView(Ui.text(this, unit, 12, Ui.colorSub(this), false));
+        TextView save = Ui.button(this, "保存", false, v -> {
+            int val;
+            try {
+                val = Integer.parseInt(et.getText().toString().trim());
+            } catch (Throwable t) {
+                toast("请输入数字");
+                return;
+            }
+            if (val < min) val = min;
+            if (val > max) val = max;
+            et.setText(String.valueOf(val));
+            sp.edit().putInt(key, val).apply();
+            toast(title + " 已设为 " + val + unit);
         });
-        parent.addView(cb);
-        if (description != null) parent.addView(desc(description));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = Ui.dp(this, 8);
+        box.addView(save, lp);
+        card.addView(Ui.textRow(this, title, sub, box));
     }
 
-    private void header(LinearLayout parent, String text) {
-        TextView tv = new TextView(this);
-        tv.setText(text);
-        tv.setTextSize(13);
-        tv.setTextColor(Color.parseColor("#3B7CF6"));
-        tv.setPadding(0, dp(16), 0, dp(2));
-        parent.addView(tv);
+    private void addNote(LinearLayout card, String s) {
+        TextView tv = Ui.text(this, s, 12, Ui.colorSub(this), false);
+        tv.setLineSpacing(Ui.dp(this, 3), 1f);
+        tv.setPadding(Ui.dp(this, 14), Ui.dp(this, 4), Ui.dp(this, 14), Ui.dp(this, 4));
+        card.addView(tv);
     }
 
-    private TextView desc(String text) {
-        TextView tv = new TextView(this);
-        tv.setText(text);
-        tv.setTextSize(11);
-        tv.setTextColor(Color.parseColor("#666666"));
-        tv.setPadding(0, 0, 0, dp(2));
-        return tv;
+    /* ---------------- 杂项 ---------------- */
+
+    private void openQq() {
+        Intent i = getPackageManager().getLaunchIntentForPackage("com.tencent.mobileqq");
+        if (i == null) {
+            toast("未安装 QQ");
+            return;
+        }
+        try {
+            startActivity(i);
+        } catch (Throwable t) {
+            toast("启动失败: " + t);
+        }
     }
 
     private void toast(String s) {
@@ -183,9 +194,5 @@ public final class SettingsActivity extends Activity {
         } catch (Throwable t) {
             return "?";
         }
-    }
-
-    private int dp(int v) {
-        return (int) (v * getResources().getDisplayMetrics().density);
     }
 }

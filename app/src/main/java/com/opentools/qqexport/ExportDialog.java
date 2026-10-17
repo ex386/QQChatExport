@@ -165,11 +165,12 @@ public final class ExportDialog {
         withUin.setChecked(Prefs.bool(Prefs.K_UIN, Prefs.D_UIN));
         root.addView(withUin);
 
+        final boolean md = Prefs.bool(Prefs.K_MD, Prefs.D_MD);
         final AlertDialog dlg = new AlertDialog.Builder(act)
                 .setTitle("导出聊天记录 · 共 " + all.size() + " 条 · " + key)
                 .setView(root)
                 .setNegativeButton("取消", null)
-                .setPositiveButton("导出TXT", null)
+                .setPositiveButton(md ? "导出Markdown" : "导出TXT", null)
                 .setNeutralButton("复制到剪切板", null)
                 .create();
 
@@ -181,6 +182,16 @@ public final class ExportDialog {
                     return;
                 }
                 rememberUin(act, withUin.isChecked());
+                if (md) {
+                    try {
+                        Md.Result r = Md.export(act, key, picked, withUin.isChecked());
+                        Toast.makeText(act, r.summary() + "\n→ " + r.dir, Toast.LENGTH_LONG).show();
+                        dlg.dismiss();
+                    } catch (Throwable t) {
+                        Toast.makeText(act, "导出失败: " + t, Toast.LENGTH_LONG).show();
+                    }
+                    return;
+                }
                 String text = Export.build(key, picked, withUin.isChecked());
                 try {
                     String path = Export.toFile(act, key, text);

@@ -2,7 +2,9 @@ package com.opentools.qqexport;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 统一的消息模型。
@@ -12,15 +14,55 @@ import java.util.List;
  *  2) 旧版：MessageRecord（保留兼容，真机上一般不会再走到）。
  *
  * 注意：NT 的 msgId 取代了旧的 uniseq 作为唯一键，否则去重会失效。
+ *
+ * v1.5 起正文不再是「一个字符串」，而是按元素拆成 {@link Part} 列表：
+ * 图片/表情包会把本地文件路径一起带出来，导出时据此把媒体文件复制到同目录，
+ * 文字则原样保留换行（Markdown 里要还原成真正的段落）。
  */
 public class Msg {
+
+    /* ---------------- 元素类型 ---------------- */
+    public static final int P_TEXT = 0;
+    public static final int P_PIC = 1;
+    public static final int P_FACE = 2;
+    public static final int P_VOICE = 3;
+    public static final int P_VIDEO = 4;
+    public static final int P_FILE = 5;
+    public static final int P_CARD = 6;
+    public static final int P_TIP = 7;
+    public static final int P_REPLY = 8;
+    public static final int P_FORWARD = 9;
+    public static final int P_OTHER = 10;
+
+    /** 正文片段 */
+    public static final class Part {
+        public int kind;
+        /** 展示文案（图片里是 [图片] 这类占位） */
+        public String text = "";
+        /** 本地文件路径（图片/表情包/语音/文件），可能为空 */
+        public String path;
+        /** 缩略图 / 备用路径 */
+        public String thumb;
+        /** 原始文件名或表情名 */
+        public String name;
+        public String md5;
+        public long size;
+        public int w, h;
+
+        /** 是不是可以落盘成媒体文件的片段 */
+        public boolean media() {
+            return kind == P_PIC || kind == P_FACE || kind == P_VIDEO || kind == P_FILE;
+        }
+    }
+
     public String selfUin, friendUin, senderUin, nick;
     public long time;       // 秒
     public int type;        // msgtype
     public long uniseq;     // NT 下等于 msgId
     public long shmsgseq;   // 群序号
     public boolean isTroop, isSend;
-    public String text;
+    public String text = "";
+    public final List<Part> parts = new ArrayList<>();
 
     /** 学习到的本机 UIN：单聊里 senderUin != peerUin 即自己发的，据此反推 */
     private static volatile long SELF = 0L;
@@ -40,7 +82,6 @@ public class Msg {
 
         Object rec = MsgItem.record(o);          // 新内核：AIOMsgItem -> MsgRecord
         if (rec != null) return fromNT(rec);
-
         String cn = o.getClass().getName();
         if (cn.contains("MessageRecord")) return fromLegacy(o);
         return null;
@@ -52,14 +93,11 @@ public class Msg {
         Msg m = new Msg();
         long msgId = Reflect.L(r, "msgId");
         if (msgId == 0L) return null;
-
         long t = Reflect.L(r, "msgTime");
         if (t > 100000000000L) t /= 1000L;       // 有些回调给的是毫秒
         int chatType = (int) Reflect.L(r, "chatType");
-
         long peerUin = Reflect.L(r, "peerUin");
         long senderUin = Reflect.L(r, "senderUin");
-
         m.uniseq = msgId;
         m.shmsgseq = Reflect.L(r, "msgSeq");
         m.time = t;
@@ -94,35 +132,35 @@ public class Msg {
                 }
             }
         }
-
-        m.text = renderElements(Reflect.get(r, "elements"));
-        if (m.text == null) m.text = "";
+        fillParts(m, Reflect.get(r, "elements"));
         if (m.friendUin == null || m.friendUin.isEmpty()) return null;
         return m;
     }
 
-    /** 元素类型在 NT 里没有稳定的编号语义，所以按“哪个字段非空”来判定，最稳 */
-    private static String renderElements(Object elements) {
-        if (!(elements instanceof List)) return "";
-        List<?> list = (List<?>) elements;
+    private static void fillParts(Msg m, Object elements) {
+        if (!(elements instanceof List)) return;
         StringBuilder sb = new StringBuilder();
-        for (Object el : list) {
+        for (Object el : (List<?>) elements) {
             if (el == null) continue;
-            String piece = renderElement(el);
-            if (piece == null || piece.isEmpty()) continue;
+            Part p = partOf(el);
+            if (p == null) continue;
+            m.parts.add(p);
+            String one = flatten(p.text);
+            if (one.isEmpty()) continue;
             if (sb.length() > 0) sb.append(' ');
-            sb.append(piece);
+            sb.append(one);
         }
-        return sb.toString();
+        m.text = sb.toString();
     }
 
     /**
      * MsgElement 里同时存在 elementId/elementType/extBufForUI 这类非内容字段，
-     * 而且它们排在 textElement 之前。旧实现“取第一个非空引用字段”会把
+     * 而且它们排在 textElement 之前。旧实现「取第一个非空引用字段」会把
      * extBufForUI 当成正文（describe 返回空串），直接导致正文丢失。
      *
-     * 所以这里改成显式按内容字段名依次尝试：命中就出文案，没命中继续下一个。
-     * 字段表见 classes.dex 里 Lcom/tencent/qqnt/kernel/nativeinterface/MsgElement;。
+     * 所以这里改成显式按内容字段名依次尝试：命中就出片段，没命中继续下一个。
+     * 字段表来自 base.apk（9.2.35）classes.dex 的
+     * Lcom/tencent/qqnt/kernel/nativeinterface/MsgElement;。
      */
     private static final String[] ELEMENT_ORDER = {
             "textElement",
@@ -132,11 +170,11 @@ public class Msg {
             "fileElement",
             "faceElement",
             "marketFaceElement",
+            "replyElement",
             "arkElement",
             "structMsgElement",
             "structLongMsgElement",
             "grayTipElement",
-            "replyElement",
             "multiForwardMsgElement",
             "walletElement",
             "markdownElement",
@@ -154,13 +192,13 @@ public class Msg {
             "prologueMsgElement",
     };
 
-    private static String renderElement(Object el) {
+    private static Part partOf(Object el) {
         Class<?> c = el.getClass();
         for (String name : ELEMENT_ORDER) {
             Object v = field(c, el, name);
             if (v == null) continue;
-            String s = describe(name, v);
-            if (s != null && !s.isEmpty()) return s;
+            Part p = build(name, v);
+            if (p != null) return p;
         }
         // 兜底：按类型扫一遍，跳过 extBufForUI 之类的原始数据字段
         for (Field f : c.getDeclaredFields()) {
@@ -171,10 +209,10 @@ public class Msg {
             if (f.getType() == byte[].class) continue;
             Object v = field(c, el, n);
             if (v == null) continue;
-            String s = describe(n, v);
-            if (s != null && !s.isEmpty()) return s;
+            Part p = build(n, v);
+            if (p != null) return p;
         }
-        return "";
+        return null;
     }
 
     /** 逐层往上找同名字段，取到返回值 */
@@ -193,63 +231,128 @@ public class Msg {
         return null;
     }
 
-    private static String describe(String field, Object v) {
-        switch (field) {
-            case "textElement":
-                return nl(str(v, "content"));
-            case "picElement":
-                return "[图片]";
+    private static Part text(int kind, String s) {
+        Part p = new Part();
+        p.kind = kind;
+        p.text = s == null ? "" : s;
+        return p;
+    }
+
+    /**
+     * 单个元素 -> 片段。返回 null 表示「这不是内容元素，继续看下一个」。
+     * 注意 textElement 内容为空时也要继续往后找（QQ 会给纯图片消息塞一个空文本元素）。
+     */
+    private static Part build(String fname, Object v) {
+        switch (fname) {
+            case "textElement": {
+                String s = str(v, "content");
+                if (s == null || s.trim().isEmpty()) return null;
+                return text(P_TEXT, s);
+            }
+            case "picElement": {
+                Part p = text(P_PIC, "[图片]");
+                p.path = firstStr(v, "sourcePath", "originPath", "localPath");
+                p.md5 = firstStr(v, "md5HexStr", "originImageMd5");
+                p.name = firstStr(v, "fileName", "summary");
+                p.size = Reflect.L(v, "fileSize");
+                p.w = (int) Reflect.L(v, "picWidth");
+                p.h = (int) Reflect.L(v, "picHeight");
+                p.thumb = firstMapValue(Reflect.get(v, "thumbPath"));
+                return p;
+            }
             case "pttElement": {
                 long d = Reflect.L(v, "duration");
-                return d > 0 ? "[语音 " + d + "\"]" : "[语音]";
+                Part p = text(P_VOICE, d > 0 ? "[语音 " + d + "s]" : "[语音]");
+                p.path = firstStr(v, "filePath");
+                p.size = Reflect.L(v, "fileSize");
+                String t = str(v, "text");                 // QQ 自带的语音转文字
+                if (t != null && !t.trim().isEmpty()) p.text = p.text + " " + t.trim();
+                return p;
             }
-            case "videoElement":
-                return "[视频]";
+            case "videoElement": {
+                Part p = text(P_VIDEO, "[视频]");
+                p.path = firstStr(v, "filePath");
+                p.thumb = firstMapValue(Reflect.get(v, "thumbPath"));
+                p.size = Reflect.L(v, "fileSize");
+                p.w = (int) Reflect.L(v, "thumbWidth");
+                p.h = (int) Reflect.L(v, "thumbHeight");
+                return p;
+            }
             case "fileElement": {
-                String name = str(v, "fileName");
-                return name == null || name.isEmpty() ? "[文件]" : "[文件] " + name;
+                String n = firstStr(v, "fileName");
+                Part p = text(P_FILE, n == null || n.isEmpty() ? "[文件]" : "[文件] " + n);
+                p.path = firstStr(v, "filePath");
+                p.name = n;
+                p.size = Reflect.L(v, "fileSize");
+                return p;
             }
-            case "faceElement":
-                return "[表情]";
+            case "faceElement": {
+                // 系统小黄脸：faceText 形如 /微笑
+                String t = firstStr(v, "faceText");
+                if (t == null || t.trim().isEmpty()) t = "[表情]";
+                return text(P_FACE, t.trim());
+            }
             case "marketFaceElement": {
-                String name = str(v, "faceName");
-                return name == null || name.isEmpty() ? "[表情]" : "[表情 " + name + "]";
+                String n = firstStr(v, "faceName");
+                Part p = text(P_FACE, n == null || n.isEmpty() ? "[表情包]" : n);
+                p.path = firstStr(v, "staticFacePath", "dynamicFacePath");
+                p.name = n;
+                p.w = (int) Reflect.L(v, "imageWidth");
+                p.h = (int) Reflect.L(v, "imageHeight");
+                return p;
+            }
+            case "replyElement": {
+                String s = firstStr(v, "sourceMsgText");
+                s = s == null ? "" : s.replace('\n', ' ').trim();
+                if (s.length() > 80) s = s.substring(0, 80) + "…";
+                return text(P_REPLY, s.isEmpty() ? "[回复]" : s);
             }
             case "arkElement": {
-                String app = str(v, "appName");
-                return app == null || app.isEmpty() ? "[卡片]" : "[卡片 " + app + "]";
+                String app = firstStr(v, "appName");
+                return text(P_CARD, app == null || app.isEmpty() ? "[卡片]" : "[卡片] " + app);
             }
             case "structMsgElement":
-                return "[卡片]";
+            case "structLongMsgElement":
+                return text(P_CARD, "[卡片]");
             case "grayTipElement":
-                return "[提示]";
-            case "replyElement":
-                return "[回复]";
+                return text(P_TIP, "[提示]");
             case "multiForwardMsgElement":
-                return "[聊天记录]";
+                return text(P_FORWARD, "[聊天记录]");
             case "walletElement":
-                return "[红包/转账]";
+                return text(P_CARD, "[红包/转账]");
             case "markdownElement":
-                return "[图文]";
+                return text(P_CARD, "[图文]");
             case "giphyElement":
-                return "[动图]";
+                return text(P_PIC, "[动图]");
             case "calendarElement":
-                return "[日程]";
+                return text(P_CARD, "[日程]");
             case "shareLocationElement":
-                return "[位置]";
+                return text(P_CARD, "[位置]");
             case "liveGiftElement":
-                return "[礼物]";
+                return text(P_CARD, "[礼物]");
             case "tofuRecordElement":
-                return "[待办]";
-            /* 纯 UI 元素，不进正文 */
-            case "inlineKeyboardElement":
-            case "actionBarElement":
-            case "recommendedMsgElement":
-            case "prohibitedMsgElement":
-                return "";
+                return text(P_CARD, "[待办]");
+            case "filterMsgElement":
+                return null;                     // 被过滤的消息（如敏感词替换），不进正文
             default:
-                return "";
+                return null;
         }
+    }
+
+    private static String firstStr(Object o, String... names) {
+        Object v = Reflect.get(o, names);
+        if (v == null) return null;
+        String s = String.valueOf(v);
+        return s.isEmpty() ? null : s;
+    }
+
+    private static String firstMapValue(Object map) {
+        if (!(map instanceof Map)) return null;
+        for (Object k : ((Map<?, ?>) map).keySet()) {
+            Object v = ((Map<?, ?>) map).get(k);
+            if (v instanceof String && !((String) v).isEmpty()) return (String) v;
+        }
+        return null;
     }
 
     private static String str(Object o, String... names) {
@@ -257,9 +360,10 @@ public class Msg {
         return v == null ? null : String.valueOf(v);
     }
 
-    private static String nl(String s) {
+    /** 压成单行，给 TXT 导出与列表预览用 */
+    public static String flatten(String s) {
         if (s == null) return "";
-        return s.replace("\r\n", " ↵ ").replace('\n', ' ').replace('\r', ' ');
+        return s.replace("\r\n", " ↵ ").replace('\n', ' ').replace('\r', ' ').trim();
     }
 
     /* ---------------- 旧版 MessageRecord（兼容保留） ---------------- */
@@ -277,6 +381,7 @@ public class Msg {
         m.isTroop = Reflect.L(rec, "istroop") == 1;
         m.isSend = m.senderUin != null && m.senderUin.equals(m.selfUin);
         m.text = renderLegacy(m.type, Reflect.S(rec, "msg"), Reflect.S(rec, "extStr"));
+        m.parts.add(text(P_TEXT, m.text));
         if (m.nick == null || m.nick.isEmpty()) m.nick = m.senderUin;
         if (m.friendUin == null) return null;
         return m;

@@ -14,14 +14,17 @@ public final class Store {
     private static volatile String current = "";
 
     private static volatile int limit = -1;
-
-    /** 缓存上限（来自设置页），读一次缓存住，避免每条消息都走反射 */
+    private static volatile long limitAt;
+    /** 缓存上限（来自设置页）。每 3 秒允许重新读一次，改完设置不用重启 QQ */
     static int limit() {
+        long now = System.currentTimeMillis();
         int v = limit;
-        if (v <= 0) {
-            v = Prefs.num(Prefs.K_LIMIT, Prefs.D_LIMIT);
-            if (v <= 0) v = Prefs.D_LIMIT;
-            limit = v;
+        if (v <= 0 || now - limitAt > 3000L) {
+            int nv = Prefs.num(Prefs.K_LIMIT, Prefs.D_LIMIT);
+            if (nv <= 0) nv = Prefs.D_LIMIT;
+            limit = nv;
+            limitAt = now;
+            return nv;
         }
         return v;
     }
