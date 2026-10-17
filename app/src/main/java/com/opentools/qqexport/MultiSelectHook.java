@@ -66,8 +66,12 @@ public final class MultiSelectHook {
     /** 最近一个 MultiSelectBarVB 及其 VM */
     private static volatile Object sBar;
     private static volatile Object sBarVM;
-    /** multifoward.b 单例 */
+    /** multifoward.b 单例（懒读，见 forward()） */
     private static volatile Object sFwd;
+    /** multifoward.b 里的静态自身字段 a；只记字段不读值 */
+    private static volatile Field sFwdField;
+    /** 读取失败一次就别再试，避免每次都触发类初始化异常 */
+    private static volatile boolean sFwdBroken;
     /** 最近一次 g(ctx) 的入参（aio runtime context）与返回（勾选列表） */
     private static volatile Object sLastCtx;
     private static volatile List<?> sLastPicked;
@@ -309,14 +313,19 @@ public final class MultiSelectHook {
             return;
         }
 
-        // 静态单例字段 a
+        // 静态单例字段 a：这里只记字段，绝不读值。
+        // 9.2.35 实测：multifoward.b 的 <clinit> 里会碰 ViewUtils，而 ViewUtils
+        // 的 <clinit> 依赖 ApplicationDelegate.getResources()。handleLoadPackage
+        // 阶段 Application 还没建好，这里读一次就会 ExceptionInInitializerError，
+        // 类被永久标记为 errored，之后 QQ 自己的线程碰到它直接 NoClassDefFoundError
+        // -> 启动即闪退（crash_20261018_022046 就是这么来的）。
+        // getDeclaredFields/hookMethod 都不会触发 <clinit>，所以这段是安全的。
         for (Field fd : fwd.getDeclaredFields()) {
             if (!Modifier.isStatic(fd.getModifiers())) continue;
             if (fd.getType() != fwd) continue;
             try {
                 fd.setAccessible(true);
-                Object v = fd.get(null);
-                if (v != null) sFwd = v;
+                sFwdField = fd;
             } catch (Throwable ignored) {
             }
         }
@@ -375,9 +384,29 @@ public final class MultiSelectHook {
         return new ArrayList<>(map.values());
     }
 
+    /**
+     * 懒取 multifoward.b 的单例。只在用户点“导出”时调用，
+     * 那时 Application/Resources 早已就绪，不会踩 <clinit> 的坑。
+     */
+    private static Object forward() {
+        if (sFwdBroken) return null;
+        Field fd = sFwdField;
+        if (fd == null) return null;
+        try {
+            Object v = fd.get(null);
+            if (v != null) sFwd = v;
+            return v;
+        } catch (Throwable t) {
+            sFwdBroken = true;
+            L.e("读 multifoward 单例失败，本次会话不再尝试: " + t);
+            return null;
+        }
+    }
+
     /** multifoward.b.a.g(ctx) —— QQ 自己算出来的当前勾选列表 */
     private static List<?> queryPicked() {
         Object inst = sFwd;
+        if (inst == null) inst = forward();
         if (inst == null) return null;
 
         Object ctx = sLastCtx;
