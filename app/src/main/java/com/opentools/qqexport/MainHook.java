@@ -1,8 +1,9 @@
 package com.opentools.qqexport;
 
 import android.app.Activity;
+import android.app.AndroidAppHelper;
+import android.app.Application;
 import android.os.Bundle;
-
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -49,7 +50,15 @@ public class MainHook implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
         if (!PKG.equals(lp.packageName)) return;
-
+        /* v1.9：把 Prefs 绑到 QQ 自己的 Context 上。
+           这样设置面板与导出逻辑读写的是同一份 com.tencent.mobileqq 的 qqexport.xml，
+           改完同进程立即可见，也不再依赖 XSharedPreferences 跨进程读模块目录（分区存储下读不到）。 */
+        try {
+            Application app = AndroidAppHelper.currentApplication();
+            if (app != null) Prefs.attach(app);
+        } catch (Throwable t) {
+            L.e(t);
+        }
         L.setVerbose(Prefs.bool(Prefs.K_LOG, Prefs.D_LOG));
         XposedBridge.log("[QQExport] injected: " + lp.processName);
 
@@ -176,6 +185,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     if (!a.getClass().getName().startsWith(PKG)) return;
                     if (!looksLikeChat(a)) return;
 
+                    Prefs.attach(a.getApplicationContext()); // 兜底：handleLoadPackage 时取不到 Application 也不会写错地方
                     Prefs.reload();                 // 让设置页的改动立刻生效
                     L.setVerbose(Prefs.bool(Prefs.K_LOG, Prefs.D_LOG));
                     Store.invalidateLimit();

@@ -77,6 +77,15 @@ public final class ExportDialog {
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView close = Ui.closeButton(act);
         int cs = Ui.dp(act, 28);
+        /* 齿轮：进设置面板（同进程），改完格式后重开本面板，让按钮文案与导出分支都换成新格式 */
+        TextView gear = Ui.textButton(act, "⚙", v -> SettingsPanel.show(act, () -> {
+            if (ref[0] != null) ref[0].dismiss();
+            show(act);
+        }));
+        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, cs);
+        glp.rightMargin = Ui.dp(act, 4);
+        head.addView(gear, glp);
         head.addView(close, new LinearLayout.LayoutParams(cs, cs));
         close.setOnClickListener(v -> {
             if (ref[0] != null) ref[0].dismiss();

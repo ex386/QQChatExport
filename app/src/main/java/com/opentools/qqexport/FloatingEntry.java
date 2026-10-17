@@ -42,6 +42,15 @@ public final class FloatingEntry {
         btn.setLayoutParams(lp);
 
         btn.setOnClickListener(v -> ExportDialog.show(act));
+        /* 长按进设置：设置面板与导出逻辑同进程，写的是 QQ 自己的 prefs，改完立即生效 */
+        btn.setOnLongClickListener(v -> {
+            try {
+                SettingsPanel.show(act);
+            } catch (Throwable t) {
+                L.e(t);
+            }
+            return true;
+        });
         root.addView(btn);
     }
 }

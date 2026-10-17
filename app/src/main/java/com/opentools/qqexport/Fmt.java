@@ -36,11 +36,12 @@ public final class Fmt {
         } catch (Throwable ignored) {
         }
         if (v == null || v.isEmpty()) {
-            // 老版本只有「导出为 Markdown」开关，没设置过新键时沿用它的语义
+            /* 只有用户确实写过旧开关时才沿用它的语义。
+               以前这里无条件 Prefs.bool(K_MD, D_MD)，一旦 prefs 读不到就恒为 true，
+               于是「设置里选了网页，导出还是 Markdown」——默认值必须走 D_FMT。 */
             try {
-                v = Prefs.bool(Prefs.K_MD, Prefs.D_MD) ? MD : TXT;
-            } catch (Throwable t) {
-                v = Prefs.D_FMT;
+                if (Prefs.has(Prefs.K_MD)) v = Prefs.bool(Prefs.K_MD, false) ? MD : TXT;
+            } catch (Throwable ignored) {
             }
         }
         for (String k : KEYS) if (k.equals(v)) return v;
@@ -50,10 +51,7 @@ public final class Fmt {
     public static void set(Context c, String v) {
         if (v == null) return;
         session = v;
-        try {
-            Prefs.local(c).edit().putString(Prefs.K_FMT, v).apply();
-        } catch (Throwable ignored) {
-        }
+        Prefs.putStr(c, Prefs.K_FMT, v);
     }
 
     public static int index(String k) {
