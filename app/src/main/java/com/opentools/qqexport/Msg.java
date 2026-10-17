@@ -284,6 +284,12 @@ public class Msg {
                 Part p = text(P_VOICE, d > 0 ? "[语音 " + d + "s]" : "[语音]");
                 p.path = firstStr(v, "filePath");
                 p.size = Reflect.L(v, "fileSize");
+                // v3.0：语音落盘名实测就是 <md5HexStr>.amr（ptt 目录，2073 个），
+                // 补上 md5/name 才能拼路径直命中；没有它只能靠 size 兜底，
+                // 而语音普遍 5~30KB，永远低于 SIZE_ONLY_MIN，等于必然显示占位。
+                p.md5 = firstStr(v, "md5HexStr", "md5");
+                p.name = firstStr(v, "fileName");
+                p.uuid = firstStr(v, "fileUuid");
                 String t = str(v, "text");                 // QQ 自带的语音转文字
                 if (t != null && !t.trim().isEmpty()) p.text = p.text + " " + t.trim();
                 collect(p, v, "filePath");

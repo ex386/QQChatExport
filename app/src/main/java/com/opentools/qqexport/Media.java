@@ -54,7 +54,7 @@ public final class Media {
     private static volatile Map<String, Hit> BY_NAME = null;
     private static volatile long INDEX_AT = 0L;
     /** 各兜底策略的命中计数，导出结束后打日志用 */
-    private static int CNT_PATH, CNT_UUID, CNT_PRED, CNT_MD5, CNT_SIZE, CNT_NAME, CNT_CACHE;
+    private static int CNT_PATH, CNT_UUID, CNT_PRED, CNT_FLAT, CNT_MD5, CNT_INMD5, CNT_SIZE, CNT_NAME, CNT_CACHE;
     /** 索引最多收这么多文件，防止极端情况下卡死（本机实测约有 4.3 万个缓存文件） */
     private static final int INDEX_CAP = 120000;
     private static final int MAX_DEPTH = 2;
@@ -158,6 +158,39 @@ public final class Media {
         return null;
     }
 
+    /**
+     * 语音这类「平铺目录 + 文件名为裸 key」的目录探测。
+     *
+     * <p>{@code ptt} 下是 {@code <md5>.amr}，既没有 {@code Cache_} 前缀也没有哈希桶，
+     * 所以只能拿 md5 直接拼扩展名试。实测 2073 个文件全是 {@code .amr}，
+     * 其余后缀是兜底（换格式/老版本时 QQ 会落 {@code .silk}/{@code .slk}）。</p>
+     */
+    private static File probeFlat(Context ctx, String... keys) {
+        File base = qqBase(ctx);
+        if (base == null) return null;
+        List<File> roots = new ArrayList<>(2);
+        uinPttRoots(base, roots);
+        if (roots.isEmpty()) return null;
+        String[] exts = {".amr", ".silk", ".slk", ".mp3", ".ogg", ".wav", ".flac", ""};
+        for (int i = 0; i < keys.length; i++) {
+            String k = keys[i];
+            if (k == null) continue;
+            k = k.trim().toLowerCase(java.util.Locale.US);
+            if (k.length() < 8) continue;
+            for (int j = 0; j < roots.size(); j++) {
+                for (int e = 0; e < exts.length; e++) {
+                    File f = new File(roots.get(j), k + exts[e]);
+                    if (f.isFile() && f.length() > 0) {
+                        CNT_FLAT++;
+                        L.i("media: 平铺路径命中 " + f);
+                        return f;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
     /* ---------------- 目录 ---------------- */
 
     /** QQ 在外部存储里的数据根目录（.../Android/data/com.tencent.mobileqq） */
@@ -204,6 +237,12 @@ public final class Media {
         addDir(out, new File(base, "Tencent/MobileQQ/shortvideo"));
         addDir(out, new File(base, "cache/shortvideo"));
         addDir(out, new File(base, "Tencent/QQfile_recv"));
+        // v3.0 补的两个缺口：语音与缩略图。之前漏掉它们，
+        // 语音（无 URL、无网络兜底）必然占位，视频封面也经常找不到。
+        uinPttRoots(base, out);
+        // 缩略图：文件名形如 _-1039664697__<32位md5>_<数字>_..._wifi_0_<时间戳>.jpg，
+        // md5 嵌在中间而不是文件名开头，所以只能靠「包含 md5」兜底匹配
+        addDir(out, new File(base, "Tencent/MobileQQ/thumb"));
         return out;
     }
 
@@ -214,7 +253,36 @@ public final class Media {
         }
     }
 
+    /**
+     * 语音目录：{@code Tencent/MobileQQ/<uin>/ptt}。
+     *
+     * <p>uin 是登录账号，写死在代码里会在换号后失效，所以运行期枚举
+     * {@code Tencent/MobileQQ} 下所有纯数字子目录。实测该层只有一个账号目录。</p>
+     */
+    private static void uinPttRoots(File base, List<File> out) {
+        try {
+            File[] kids = new File(base, "Tencent/MobileQQ").listFiles();
+            if (kids == null) return;
+            for (int i = 0; i < kids.length; i++) {
+                File k = kids[i];
+                if (!k.isDirectory() || !isDigits(k.getName())) continue;
+                addDir(out, new File(k, "ptt"));
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static boolean isDigits(String s) {
+        if (s == null || s.isEmpty()) return false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < '0' || c > '9') return false;
+        }
+        return true;
+    }
+
     /* ---------------- 解析 ---------------- */
+
 
     /**
      * 按候选路径 + md5 + 大小找本地文件，找不到返回 null。
@@ -266,6 +334,9 @@ public final class Media {
         // 0.4) 用 key 算出桶名+文件名，直接拼路径探测（不建索引，代价最低）
         File direct = probeBuckets(ctx, url, u, m);
         if (direct != null) return direct;
+        // 0.45) 语音走另一套命名：ptt/<md5>.amr，裸 key 直拼
+        File flat = probeFlat(ctx, m, u);
+        if (flat != null) return flat;
         List<Hit> idx = index(ctx);
         if (idx.isEmpty()) return null;
 
@@ -336,6 +407,19 @@ public final class Media {
                 return h.file;
             }
         }
+        // 4) 文件名里内嵌 md5（缩略图兜底）
+        // Tencent/MobileQQ/thumb 的命名是 _-1039664697__<32位md5>_<数字>_..._wifi_0_<时间戳>.jpg，
+        // md5 既不在开头也不在结尾，只能靠包含关系找。这是最弱的一级，放在最后，
+        // 命中到的通常是缩略图而不是原图，但总比导出成占位符好。
+        if (m != null) {
+            for (Hit h : idx) {
+                String fn = h.file.getName().toLowerCase(java.util.Locale.US);
+                if (isSidecar(fn) || !fn.contains(m)) continue;
+                CNT_INMD5++;
+                L.i("media: 按内嵌 md5 命中 " + h.file);
+                return h.file;
+            }
+        }
         return null;
     }
 
@@ -394,7 +478,8 @@ public final class Media {
 
     /** 导出结束后打印各策略命中情况，真机排查用 */
     public static String summary() {
-        return "path=" + CNT_PATH + " uuid=" + CNT_UUID + " pred=" + CNT_PRED + " md5=" + CNT_MD5
+        return "path=" + CNT_PATH + " uuid=" + CNT_UUID + " pred=" + CNT_PRED + " flat=" + CNT_FLAT
+            + " md5=" + CNT_MD5 + " inmd5=" + CNT_INMD5
             + " size=" + CNT_SIZE + " name=" + CNT_NAME + " cache=" + CNT_CACHE;
     }
 
@@ -428,7 +513,7 @@ public final class Media {
         INDEX = null;
         BY_NAME = null;
         INDEX_AT = 0L;
-        CNT_PATH = CNT_UUID = CNT_PRED = CNT_MD5 = CNT_SIZE = CNT_NAME = CNT_CACHE = 0;
+        CNT_PATH = CNT_UUID = CNT_PRED = CNT_FLAT = CNT_MD5 = CNT_INMD5 = CNT_SIZE = CNT_NAME = CNT_CACHE = 0;
     }
 
     /* ---------------- md5 ---------------- */
